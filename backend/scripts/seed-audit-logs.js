@@ -1,15 +1,19 @@
+require('dotenv').config();
 const sql = require('mssql');
 
 // Database configuration
 const sqlConfig = {
+  server: process.env.DB_HOST || 'localhost',
+  database: process.env.DB_NAME || 'HerzogRailAuthority',
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || 'Herzog2024!',
-  server: process.env.DB_SERVER || 'localhost',
-  database: process.env.DB_NAME || 'HerzogRailAuthority',
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    connectTimeout: 15000,
+    requestTimeout: 15000
   },
   pool: {
     max: 10,
@@ -31,7 +35,7 @@ async function seedAuditLogs() {
     const auditLogs = [
       // User actions
       {
-        userId: 2,
+        userId: 1,
         actionType: 'CREATE',
         tableName: 'Users',
         recordId: 3,
@@ -41,7 +45,7 @@ async function seedAuditLogs() {
         deviceInfo: 'Chrome 120.0 - Windows 10'
       },
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Users',
         recordId: 3,
@@ -52,7 +56,7 @@ async function seedAuditLogs() {
       },
       // Authority actions
       {
-        userId: 2,
+        userId: 1,
         actionType: 'CREATE',
         tableName: 'Authorities',
         recordId: 1,
@@ -62,7 +66,7 @@ async function seedAuditLogs() {
         deviceInfo: 'Chrome 120.0 - Windows 10'
       },
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Authorities',
         recordId: 1,
@@ -72,7 +76,7 @@ async function seedAuditLogs() {
         deviceInfo: 'Chrome 120.0 - Windows 10'
       },
       {
-        userId: 2,
+        userId: 1,
         actionType: 'DELETE',
         tableName: 'Authorities',
         recordId: 5,
@@ -83,7 +87,7 @@ async function seedAuditLogs() {
       },
       // Alert configuration actions
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Alert_Configurations',
         recordId: 1,
@@ -93,7 +97,7 @@ async function seedAuditLogs() {
         deviceInfo: 'Firefox 121.0 - Windows 10'
       },
       {
-        userId: 2,
+        userId: 1,
         actionType: 'CREATE',
         tableName: 'Alert_Configurations',
         recordId: 9,
@@ -104,7 +108,7 @@ async function seedAuditLogs() {
       },
       // Pin type actions
       {
-        userId: 2,
+        userId: 1,
         actionType: 'CREATE',
         tableName: 'Pin_Types',
         recordId: 13,
@@ -114,7 +118,7 @@ async function seedAuditLogs() {
         deviceInfo: 'Edge 120.0 - Windows 11'
       },
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Pin_Types',
         recordId: 1,
@@ -125,7 +129,7 @@ async function seedAuditLogs() {
       },
       // Agency actions
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Agencies',
         recordId: 1,
@@ -136,7 +140,7 @@ async function seedAuditLogs() {
       },
       // Login attempts
       {
-        userId: 2,
+        userId: 1,
         actionType: 'LOGIN',
         tableName: 'Users',
         recordId: 2,
@@ -157,7 +161,7 @@ async function seedAuditLogs() {
       },
       // Authority overlap resolution
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'Authority_Overlaps',
         recordId: 1,
@@ -168,7 +172,7 @@ async function seedAuditLogs() {
       },
       // Settings changes
       {
-        userId: 2,
+        userId: 1,
         actionType: 'UPDATE',
         tableName: 'System_Settings',
         recordId: 1,
@@ -179,7 +183,7 @@ async function seedAuditLogs() {
       },
       // Bulk operations
       {
-        userId: 2,
+        userId: 1,
         actionType: 'BULK_UPDATE',
         tableName: 'Alert_Configurations',
         recordId: null,

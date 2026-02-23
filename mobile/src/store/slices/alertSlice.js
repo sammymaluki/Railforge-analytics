@@ -12,7 +12,7 @@ export const fetchAlerts = createAsyncThunk(
       return response;
     } catch (error) {
       console.error('Fetch alerts error:', error);
-      console.error('Error response:', error.response);
+      console.error('Error details:', JSON.stringify(error, null, 2));
       return rejectWithValue(error.message || 'Failed to fetch alerts');
     }
   }

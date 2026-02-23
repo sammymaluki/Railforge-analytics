@@ -30,25 +30,36 @@ async function seedSample() {
     console.log('Using subdivision id', subdivisionId);
 
     // Insert a simple track polyline (store as series of points in Tracks table BMP/EMP and a representative lat/lon)
-    const trackInsert = await pool.request()
+    let trackId;
+    const existingTrack = await pool.request()
       .input('subdivisionId', sql.Int, subdivisionId)
       .input('ls', sql.NVarChar, 'LS01')
-      .input('trackType', sql.NVarChar, 'Main')
-      .input('trackNumber', sql.NVarChar, '1')
-      .input('bmp', sql.Decimal(10,4), 0)
-      .input('emp', sql.Decimal(10,4), 10)
-      .input('assetName', sql.NVarChar, 'Sample Line')
-      .input('lat', sql.Decimal(10,8), 40.0)
-      .input('lon', sql.Decimal(11,8), -75.0)
-      .input('assetStatus', sql.NVarChar, 'ACTIVE')
-      .query(`
-        INSERT INTO Tracks (Subdivision_ID, LS, Track_Type, Track_Number, BMP, EMP, Asset_Name, Latitude, Longitude, Asset_Status)
-        OUTPUT INSERTED.Track_ID
-        VALUES (@subdivisionId, @ls, @trackType, @trackNumber, @bmp, @emp, @assetName, @lat, @lon, @assetStatus)
-      `);
+      .query(`SELECT TOP 1 Track_ID FROM Tracks WHERE Subdivision_ID = @subdivisionId AND LS = @ls`);
 
-    const trackId = trackInsert.recordset[0].Track_ID;
-    console.log('Inserted track id', trackId);
+    if (existingTrack.recordset.length > 0) {
+      trackId = existingTrack.recordset[0].Track_ID;
+      console.log('Using existing track id', trackId);
+    } else {
+      const trackInsert = await pool.request()
+        .input('subdivisionId', sql.Int, subdivisionId)
+        .input('ls', sql.NVarChar, 'LS01')
+        .input('trackType', sql.NVarChar, 'Main')
+        .input('trackNumber', sql.NVarChar, '1')
+        .input('bmp', sql.Decimal(10,4), 0)
+        .input('emp', sql.Decimal(10,4), 10)
+        .input('assetName', sql.NVarChar, 'Sample Line')
+        .input('lat', sql.Decimal(10,8), 40.0)
+        .input('lon', sql.Decimal(11,8), -75.0)
+        .input('assetStatus', sql.NVarChar, 'ACTIVE')
+        .query(`
+          INSERT INTO Tracks (Subdivision_ID, LS, Track_Type, Track_Number, BMP, EMP, Asset_Name, Latitude, Longitude, Asset_Status)
+          OUTPUT INSERTED.Track_ID
+          VALUES (@subdivisionId, @ls, @trackType, @trackNumber, @bmp, @emp, @assetName, @lat, @lon, @assetStatus)
+        `);
+
+      trackId = trackInsert.recordset[0].Track_ID;
+      console.log('Inserted track id', trackId);
+    }
 
     // Insert simple milepost geometry along the track every 1 MP
     const mileposts = [];
@@ -64,8 +75,14 @@ async function seedSample() {
         .input('lat', sql.Decimal(10,8), mp.lat)
         .input('lon', sql.Decimal(11,8), mp.lon)
         .query(`
-          INSERT INTO Milepost_Geometry (Subdivision_ID, MP, Latitude, Longitude)
-          VALUES (@subdivisionId, @mp, @lat, @lon)
+          IF NOT EXISTS (
+            SELECT 1 FROM Milepost_Geometry 
+            WHERE Subdivision_ID = @subdivisionId AND MP = @mp
+          )
+          BEGIN
+            INSERT INTO Milepost_Geometry (Subdivision_ID, MP, Latitude, Longitude)
+            VALUES (@subdivisionId, @mp, @lat, @lon)
+          END
         `);
       inserted++;
     }

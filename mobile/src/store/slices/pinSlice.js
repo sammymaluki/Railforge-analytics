@@ -125,6 +125,7 @@ const pinSlice = createSlice({
         console.log('Fetched pins in reducer:', pinsData);
         state.pins = Array.isArray(pinsData) ? pinsData.map(pin => ({
           id: pin.Pin_ID,
+          pinTypeId: pin.Pin_Type_ID,
           category: pin.Pin_Category || pin.Type_Name || 'Unknown',
           latitude: pin.Latitude,
           longitude: pin.Longitude,

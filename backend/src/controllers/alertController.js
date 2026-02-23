@@ -2,6 +2,44 @@ const AlertConfiguration = require('../models/AlertConfiguration');
 const { logger } = require('../config/logger');
 const { getConnection, sql } = require('../config/database');
 
+const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_DB_CODES.has(error.code)) return true;
+  const msg = String(error.message || '').toLowerCase();
+  return (
+    msg.includes('connection lost') ||
+    msg.includes('econnreset') ||
+    msg.includes('failed to connect') ||
+    msg.includes('timeout')
+  );
+};
+
+const runQueryWithRetry = async (requestFactory, query, context, maxRetries = 5) => {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const request = requestFactory();
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+      const delay = 200 * (2 ** (attempt - 1));
+      logger.warn(`Alert query attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms`, {
+        context,
+        error: error.message
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+};
+
 class AlertController {
   async getAlertConfigurations(req, res) {
     try {
@@ -146,7 +184,9 @@ class AlertController {
   async getUserAlerts(req, res) {
     try {
       const user = req.user;
-      const { limit = 50, unreadOnly = false } = req.query;
+      const rawLimit = Number.parseInt(req.query.limit, 10);
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 200)) : 50;
+      const unreadOnly = req.query.unreadOnly === 'true';
       
       const pool = getConnection();
       
@@ -156,24 +196,28 @@ class AlertController {
         WHERE User_ID = @userId
       `;
       
-      if (unreadOnly === 'true') {
+      if (unreadOnly) {
         query += ' AND Is_Read = 0';
       }
       
       query += ' ORDER BY Created_Date DESC';
       
-      const result = await pool.request()
-        .input('userId', sql.Int, user.User_ID)
-        .query(query);
+      const result = await runQueryWithRetry(
+        () => pool.request().input('userId', sql.Int, user.User_ID),
+        query,
+        'getUserAlerts.list'
+      );
       
       // Get unread count
       let unreadCount = 0;
-      if (unreadOnly === 'true') {
+      if (unreadOnly) {
         unreadCount = result.recordset.length;
       } else {
-        const unreadResult = await pool.request()
-          .input('userId', sql.Int, user.User_ID)
-          .query('SELECT COUNT(*) as count FROM Alert_Logs WHERE User_ID = @userId AND Is_Read = 0');
+        const unreadResult = await runQueryWithRetry(
+          () => pool.request().input('userId', sql.Int, user.User_ID),
+          'SELECT COUNT(*) as count FROM Alert_Logs WHERE User_ID = @userId AND Is_Read = 0',
+          'getUserAlerts.unreadCount'
+        );
         unreadCount = unreadResult.recordset[0].count;
       }
       
@@ -187,9 +231,22 @@ class AlertController {
       });
     } catch (error) {
       logger.error('Get user alerts error:', error);
+
+      if (String(error.message || '').includes("Invalid object name 'Alert_Logs'")) {
+        return res.json({
+          success: true,
+          data: {
+            alerts: [],
+            count: 0,
+            unreadCount: 0
+          }
+        });
+      }
+
       res.status(500).json({
         success: false,
-        error: 'Failed to get user alerts'
+        error: 'Failed to get user alerts',
+        ...(process.env.NODE_ENV === 'development' && { details: error.message })
       });
     }
   }

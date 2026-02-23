@@ -7,8 +7,6 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  ProgressViewIOS,
-  Platform,
 } from 'react-native';
 import { useSelector, useDispatch } from 'react-redux';
 import { Ionicons } from '@expo/vector-icons';
@@ -309,13 +307,9 @@ const OfflineDownloadScreen = ({ navigation }) => {
         {downloading && (
           <View style={styles.progressCard}>
             <Text style={styles.progressText}>Downloading...</Text>
-            {Platform.OS === 'ios' ? (
-              <ProgressViewIOS progress={downloadProgress} progressTintColor={theme.colors.accent} />
-            ) : (
-              <View style={styles.progressBar}>
-                <View style={[styles.progressBarFill, { width: `${Math.round(downloadProgress * 100)}%` }]} />
-              </View>
-            )}
+            <View style={styles.progressBar}>
+              <View style={[styles.progressBarFill, { width: `${Math.round(downloadProgress * 100)}%` }]} />
+            </View>
             <Text style={styles.progressPercent}>{Math.round(downloadProgress * 100)}%</Text>
           </View>
         )}

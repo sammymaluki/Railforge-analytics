@@ -59,7 +59,15 @@ const schemas = {
 
   // Authority schemas
   createAuthority: Joi.object({
-    authorityType: Joi.string().valid('Track_Authority', 'Lone_Worker_Authority').required(),
+    authorityType: Joi.string().valid(
+      'Track_Authority',
+      'Track_Authorit',
+      'Lone_Worker_Authority',
+      'Lone_Worker_Authorit',
+      'Lone_Worker',
+      'Lone Worker',
+      'Lone Worker Authority'
+    ).required(),
     subdivisionId: Joi.number().integer().positive().required(),
     beginMP: Joi.number().precision(4).required(),
     endMP: Joi.number().precision(4).min(Joi.ref('beginMP')).required(),
@@ -67,7 +75,13 @@ const schemas = {
     trackNumber: Joi.string().max(20).required(),
     employeeNameDisplay: Joi.string().max(100),
     employeeContactDisplay: Joi.string().max(20),
-    expirationTime: Joi.date().greater('now')
+    expirationTime: Joi.alternatives()
+      .try(
+        Joi.date().greater('now'),
+        Joi.valid(null),
+        Joi.string().trim().valid('')
+      )
+      .optional()
   }),
 
   // Pin schemas
@@ -87,9 +101,9 @@ const schemas = {
   gpsUpdate: Joi.object({
     latitude: Joi.number().min(-90).max(90).precision(8).required(),
     longitude: Joi.number().min(-180).max(180).precision(8).required(),
-    speed: Joi.number().precision(2).min(0),
-    heading: Joi.number().precision(2).min(0).max(360),
-    accuracy: Joi.number().precision(2).min(0),
+    speed: Joi.number().precision(2).min(0).allow(null),
+    heading: Joi.number().precision(2).min(0).max(360).allow(null),
+    accuracy: Joi.number().precision(2).min(0).allow(null),
     authorityId: Joi.number().integer().positive().required()
   }),
 

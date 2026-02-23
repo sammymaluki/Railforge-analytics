@@ -25,6 +25,10 @@
         "NSPhotoLibraryUsageDescription": "Sidekick needs photo library access to attach existing photos from your device to pin drops and trip reports.",
         "NSPhotoLibraryAddUsageDescription": "Sidekick needs permission to save photos you take with the app to your photo library.",
         "NSMotionUsageDescription": "Sidekick uses motion sensors to improve GPS accuracy and calculate your heading on tracks.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true,
+          "NSAllowsLocalNetworking": true
+        },
         "UIBackgroundModes": [
           "location",
           "fetch",

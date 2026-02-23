@@ -3,14 +3,17 @@ const sql = require('mssql');
 
 // Database configuration
 const sqlConfig = {
+  server: process.env.DB_HOST || 'localhost',
+  database: process.env.DB_NAME || 'HerzogRailAuthority',
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || 'YourStrong!Passw0rd',
-  server: process.env.DB_SERVER || 'localhost',
-  database: process.env.DB_NAME || 'HerzogRailAuthority',
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    connectTimeout: 15000,
+    requestTimeout: 15000
   },
   pool: {
     max: 10,
@@ -32,7 +35,7 @@ async function seedPinTypes() {
     const pinTypes = [
       // Safety pins
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Safety',
         subtype: 'Hazard',
         color: '#FF0000',
@@ -41,7 +44,7 @@ async function seedPinTypes() {
         sortOrder: 1
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Safety',
         subtype: 'Warning',
         color: '#FFA500',
@@ -50,7 +53,7 @@ async function seedPinTypes() {
         sortOrder: 2
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Safety',
         subtype: 'Caution',
         color: '#FFFF00',
@@ -60,7 +63,7 @@ async function seedPinTypes() {
       },
       // Infrastructure pins
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Infrastructure',
         subtype: 'Track Damage',
         color: '#8B0000',
@@ -69,7 +72,7 @@ async function seedPinTypes() {
         sortOrder: 4
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Infrastructure',
         subtype: 'Signal Issue',
         color: '#FF4500',
@@ -78,7 +81,7 @@ async function seedPinTypes() {
         sortOrder: 5
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Infrastructure',
         subtype: 'Switch Problem',
         color: '#FF6347',
@@ -88,7 +91,7 @@ async function seedPinTypes() {
       },
       // Maintenance pins
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Maintenance',
         subtype: 'Repair Needed',
         color: '#4169E1',
@@ -97,7 +100,7 @@ async function seedPinTypes() {
         sortOrder: 7
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Maintenance',
         subtype: 'Inspection Required',
         color: '#1E90FF',
@@ -106,7 +109,7 @@ async function seedPinTypes() {
         sortOrder: 8
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Maintenance',
         subtype: 'Work Complete',
         color: '#00CED1',
@@ -116,7 +119,7 @@ async function seedPinTypes() {
       },
       // Information pins
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Information',
         subtype: 'Note',
         color: '#32CD32',
@@ -125,7 +128,7 @@ async function seedPinTypes() {
         sortOrder: 10
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Information',
         subtype: 'Landmark',
         color: '#00FF00',
@@ -134,7 +137,7 @@ async function seedPinTypes() {
         sortOrder: 11
       },
       {
-        agencyId: 17,
+        agencyId: 1,
         category: 'Information',
         subtype: 'Reference Point',
         color: '#7FFF00',
@@ -155,14 +158,20 @@ async function seedPinTypes() {
         .input('isActive', sql.Bit, pinType.isActive ? 1 : 0)
         .input('sortOrder', sql.Int, pinType.sortOrder)
         .query(`
-          INSERT INTO Pin_Types (
-            Agency_ID, Pin_Category, Pin_Subtype, Color,
-            Icon_URL, Is_Active, Sort_Order
+          IF NOT EXISTS (
+            SELECT 1 FROM Pin_Types 
+            WHERE Agency_ID = @agencyId AND Pin_Subtype = @subtype
           )
-          VALUES (
-            @agencyId, @category, @subtype, @color,
-            @iconUrl, @isActive, @sortOrder
-          )
+          BEGIN
+            INSERT INTO Pin_Types (
+              Agency_ID, Pin_Category, Pin_Subtype, Color,
+              Icon_URL, Is_Active, Sort_Order
+            )
+            VALUES (
+              @agencyId, @category, @subtype, @color,
+              @iconUrl, @isActive, @sortOrder
+            )
+          END
         `);
       created++;
     }

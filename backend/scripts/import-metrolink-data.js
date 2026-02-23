@@ -15,19 +15,86 @@
 const sql = require('mssql');
 const ExcelJS = require('exceljs');
 const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 // Database configuration
 const dbConfig = {
   server: process.env.DB_HOST || 'localhost',
   database: process.env.DB_NAME || 'HerzogRailAuthority',
   user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || 'YourStrong!Passw0rd',
-  port: parseInt(process.env.DB_PORT) || 1433,
+  password: process.env.DB_PASSWORD || '',
+  port: parseInt(process.env.DB_PORT || '1434', 10),
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    connectTimeout: 60000,
+    requestTimeout: 60000,
+    appName: 'SidekickMetrolinkImport'
+  },
+  pool: {
+    max: 2,
+    min: 1,
+    idleTimeoutMillis: 60000,
+    acquireTimeoutMillis: 30000
+  },
+  connectionTimeout: 60000,
+  requestTimeout: 60000
+};
+
+const TRANSIENT_ERROR_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_ERROR_CODES.has(error.code)) return true;
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('connection lost') ||
+    message.includes('econnreset') ||
+    message.includes('failed to connect') ||
+    message.includes('timeout')
+  );
+};
+
+const queryWithRetry = async (requestFactory, query, context, maxRetries = 3) => {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const request = requestFactory();
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+      const delay = 1000 * attempt; // Linear backoff instead of exponential
+      console.warn(`  ⚠️  DB query retry ${attempt}/${maxRetries} for ${context} in ${delay}ms: ${error.message}`);
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
   }
+  throw lastError;
+};
+
+const connectWithRetry = async (maxRetries = 3) => {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await sql.connect(dbConfig);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+      const delay = 2000 * attempt; // Longer delays for connection retries
+      console.warn(`⚠️  DB connect retry ${attempt}/${maxRetries} in ${delay}ms: ${error.message}`);
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+  throw lastError;
 };
 
 const EXCEL_FILE = path.join(__dirname, '../sql/seeds/Metro Link map Data.xlsx');
@@ -62,7 +129,7 @@ async function importMetroLinkData() {
     
     // Connect to database
     console.log('📡 Connecting to database...');
-    pool = await sql.connect(dbConfig);
+    pool = await connectWithRetry();
     console.log('✅ Database connected\n');
     
     // Step 1: Create Agencies (METRLK and BNSF)
@@ -143,13 +210,14 @@ async function createAgencies(pool) {
       contact_phone: null
     };
     
-    const result = await pool.request()
-      .input('agency_cd', sql.NVarChar(50), agencyCode)
-      .input('agency_name', sql.NVarChar(100), details.name)
-      .input('region', sql.NVarChar(100), details.region)
-      .input('contact_email', sql.NVarChar(100), details.contact_email)
-      .input('contact_phone', sql.NVarChar(20), details.contact_phone)
-      .query(`
+    const result = await queryWithRetry(
+      () => pool.request()
+        .input('agency_cd', sql.NVarChar(50), agencyCode)
+        .input('agency_name', sql.NVarChar(100), details.name)
+        .input('region', sql.NVarChar(100), details.region)
+        .input('contact_email', sql.NVarChar(100), details.contact_email)
+        .input('contact_phone', sql.NVarChar(20), details.contact_phone),
+      `
         IF NOT EXISTS (SELECT 1 FROM Agencies WHERE Agency_CD = @agency_cd)
         BEGIN
           INSERT INTO Agencies (Agency_CD, Agency_Name, Region, Contact_Email, Contact_Phone)
@@ -157,7 +225,9 @@ async function createAgencies(pool) {
         END
         
         SELECT Agency_ID FROM Agencies WHERE Agency_CD = @agency_cd;
-      `);
+      `,
+      `createAgencies.${agencyCode}`
+    );
     
     const agencyId = result.recordset[0].Agency_ID;
     agencyMap[agencyCode] = agencyId;
@@ -227,14 +297,16 @@ async function createSubdivisions(pool, agencyMap) {
     
     for (const subName of subNames) {
       // Create a shortened code by removing spaces and limiting length, trim trailing underscores
-      const subCode = subName.replace(/\s+/g, '_').substring(0, 50).replace(/_+$/, '');
+      // Reduce to 20 chars to avoid truncation issues
+      const subCode = subName.replace(/\s+/g, '_').substring(0, 20).replace(/_+$/, '');
       
-      const result = await pool.request()
-        .input('agency_id', sql.Int, agencyId)
-        .input('sub_code', sql.NVarChar(50), subCode)
-        .input('sub_name', sql.NVarChar(100), `${subName} Subdivision`)
-        .input('region', sql.NVarChar(100), agencyCode === 'BNSF' ? 'National' : 'Southern California')
-        .query(`
+      const result = await queryWithRetry(
+        () => pool.request()
+          .input('agency_id', sql.Int, agencyId)
+          .input('sub_code', sql.NVarChar(50), subCode)
+          .input('sub_name', sql.NVarChar(100), `${subName} Subdivision`)
+          .input('region', sql.NVarChar(100), agencyCode === 'BNSF' ? 'National' : 'Southern California'),
+        `
           IF NOT EXISTS (SELECT 1 FROM Subdivisions WHERE Agency_ID = @agency_id AND Subdivision_Code = @sub_code)
           BEGIN
             INSERT INTO Subdivisions (Agency_ID, Subdivision_Code, Subdivision_Name, Region)
@@ -242,7 +314,9 @@ async function createSubdivisions(pool, agencyMap) {
           END
           
           SELECT Subdivision_ID FROM Subdivisions WHERE Agency_ID = @agency_id AND Subdivision_Code = @sub_code;
-        `);
+        `,
+        `createSubdivisions.${agencyCode}.${subCode}`
+      );
       
       // Map using original name (with spaces) as that's what's in the Excel
       subdivisions[subName] = result.recordset[0].Subdivision_ID;
@@ -260,19 +334,22 @@ async function createPinTypes(pool, agencyId) {
   console.log('📍 Creating Metro Link Pin Types...');
   
   for (const pinType of METROLINK_PIN_TYPES) {
-    await pool.request()
-      .input('agency_id', sql.Int, agencyId)
-      .input('category', sql.NVarChar(100), pinType.category)
-      .input('subtype', sql.NVarChar(100), pinType.subtype)
-      .input('color', sql.NVarChar(20), pinType.color)
-      .input('sort_order', sql.Int, pinType.sortOrder)
-      .query(`
+    await queryWithRetry(
+      () => pool.request()
+        .input('agency_id', sql.Int, agencyId)
+        .input('category', sql.NVarChar(100), pinType.category)
+        .input('subtype', sql.NVarChar(100), pinType.subtype)
+        .input('color', sql.NVarChar(20), pinType.color)
+        .input('sort_order', sql.Int, pinType.sortOrder),
+      `
         IF NOT EXISTS (SELECT 1 FROM Pin_Types WHERE Agency_ID = @agency_id AND Pin_Category = @category AND Pin_Subtype = @subtype)
         BEGIN
           INSERT INTO Pin_Types (Agency_ID, Pin_Category, Pin_Subtype, Color, Sort_Order)
           VALUES (@agency_id, @category, @subtype, @color, @sort_order);
         END
-      `);
+      `,
+      `createPinTypes.${pinType.category}.${pinType.subtype}`
+    );
     
     console.log(`  ✅ ${pinType.category} - ${pinType.subtype}`);
   }
@@ -525,30 +602,31 @@ async function importTrackAssets(pool, agencyMap, subdivisions, worksheet) {
       const normalizedAssetStatus = normalizeAssetStatus(assetStatus);
       const resolvedAssetSubType = assetSubType || (normalizedAssetType === 'Other' && assetType ? assetType : null);
 
-      await pool.request()
-        .input('subdivision_id', sql.Int, subdivisionId)
-        .input('ls', sql.VarChar(50), ls || null)
-        .input('track_type', sql.VarChar(20), normalizedTrackType)
-        .input('track_number', sql.VarChar(20), trackNumber ? trackNumber.toString() : null)
-        .input('div_track_type', sql.VarChar(20), normalizedDivergingTrackType)
-        .input('div_track_number', sql.VarChar(20), divergingTrackNumber ? divergingTrackNumber.toString() : null)
-        .input('facing_direction', sql.VarChar(10), facingDirection || null)
-        .input('mp_suffix', sql.VarChar(10), mpSuffix || null)
-        .input('bmp', sql.Decimal(10, 4), bmp || null)
-        .input('emp', sql.Decimal(10, 4), emp || null)
-        .input('asset_name', sql.NVarChar(200), assetName || null)
-        .input('asset_type', sql.VarChar(50), normalizedAssetType || null)
-        .input('asset_subtype', sql.VarChar(50), resolvedAssetSubType || null)
-        .input('asset_id', sql.VarChar(100), assetId || null)
-        .input('dot_number', sql.VarChar(50), dotNumber || null)
-        .input('legacy_asset_number', sql.VarChar(50), legacyAssetNumber || null)
-        .input('asset_desc', sql.NVarChar(500), assetDesc || null)
-        .input('asset_status', sql.VarChar(20), normalizedAssetStatus || null)
-        .input('latitude', sql.Decimal(10, 8), latitude)
-        .input('longitude', sql.Decimal(11, 8), longitude)
-        .input('department', sql.VarChar(50), department || null)
-        .input('notes', sql.NVarChar(sql.MAX), notes || null)
-        .query(`
+      await queryWithRetry(
+        () => pool.request()
+          .input('subdivision_id', sql.Int, subdivisionId)
+          .input('ls', sql.VarChar(50), ls || null)
+          .input('track_type', sql.VarChar(20), normalizedTrackType)
+          .input('track_number', sql.VarChar(20), trackNumber ? trackNumber.toString() : null)
+          .input('div_track_type', sql.VarChar(20), normalizedDivergingTrackType)
+          .input('div_track_number', sql.VarChar(20), divergingTrackNumber ? divergingTrackNumber.toString() : null)
+          .input('facing_direction', sql.VarChar(10), facingDirection || null)
+          .input('mp_suffix', sql.VarChar(10), mpSuffix || null)
+          .input('bmp', sql.Decimal(10, 4), bmp || null)
+          .input('emp', sql.Decimal(10, 4), emp || null)
+          .input('asset_name', sql.NVarChar(200), assetName || null)
+          .input('asset_type', sql.VarChar(50), normalizedAssetType || null)
+          .input('asset_subtype', sql.VarChar(50), resolvedAssetSubType || null)
+          .input('asset_id', sql.VarChar(100), assetId || null)
+          .input('dot_number', sql.VarChar(50), dotNumber || null)
+          .input('legacy_asset_number', sql.VarChar(50), legacyAssetNumber || null)
+          .input('asset_desc', sql.NVarChar(500), assetDesc || null)
+          .input('asset_status', sql.VarChar(20), normalizedAssetStatus || null)
+          .input('latitude', sql.Decimal(10, 8), latitude)
+          .input('longitude', sql.Decimal(11, 8), longitude)
+          .input('department', sql.VarChar(50), department || null)
+          .input('notes', sql.NVarChar(sql.MAX), notes || null),
+        `
           IF NOT EXISTS (
             SELECT 1 FROM Tracks
             WHERE Subdivision_ID = @subdivision_id
@@ -573,7 +651,9 @@ async function importTrackAssets(pool, agencyMap, subdivisions, worksheet) {
               @department, @notes
             );
           END
-        `);
+        `,
+        `importTrackAssets.${subdivisionId}.${assetId || assetName || 'unknown'}`
+      );
 
       count++;
 
@@ -632,14 +712,15 @@ async function importMilepostReferences(pool, subdivisions, worksheet) {
       }
       
       // Insert milepost geometry
-      await pool.request()
-        .input('subdivision_id', sql.Int, subdivisionId)
-        .input('milepost', sql.Decimal(10, 4), milepost)
-        .input('latitude', sql.Decimal(10, 8), latitude)
-        .input('longitude', sql.Decimal(11, 8), longitude)
-        .input('apple_url', sql.NVarChar(500), appleMapUrl || null)
-        .input('google_url', sql.NVarChar(500), googleMapUrl || null)
-        .query(`
+      await queryWithRetry(
+        () => pool.request()
+          .input('subdivision_id', sql.Int, subdivisionId)
+          .input('milepost', sql.Decimal(10, 4), milepost)
+          .input('latitude', sql.Decimal(10, 8), latitude)
+          .input('longitude', sql.Decimal(11, 8), longitude)
+          .input('apple_url', sql.NVarChar(500), appleMapUrl || null)
+          .input('google_url', sql.NVarChar(500), googleMapUrl || null),
+        `
           IF NOT EXISTS (SELECT 1 FROM Milepost_Geometry WHERE Subdivision_ID = @subdivision_id AND MP = @milepost)
           BEGIN
             INSERT INTO Milepost_Geometry (
@@ -649,7 +730,9 @@ async function importMilepostReferences(pool, subdivisions, worksheet) {
               @subdivision_id, @milepost, @latitude, @longitude, @apple_url, @google_url, 1
             );
           END
-        `);
+        `,
+        `importMilepostReferences.${subdivisionId}.${milepost}`
+      );
       
       count++;
       

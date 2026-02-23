@@ -1,8 +1,9 @@
-const { getConnection, sql } = require('../config/database');
+const { getConnectionWithRecovery, sql } = require('../config/database');
 const { logger } = require('../config/logger');
 
 const MAX_LIMIT = 5000;
 const DEFAULT_LIMIT = 1000;
+const TRANSIENT_ERROR_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 
 const LAYER_DEFINITIONS = [
   { id: 'tracks', label: 'Tracks', type: 'tracks' },
@@ -31,13 +32,67 @@ const getLimit = (value) => {
   return Math.max(1, Math.min(parsed, MAX_LIMIT));
 };
 
-const getMilepostSchemaFlags = async (pool) => {
-  const result = await pool.request().query(`
-    SELECT 
-      COL_LENGTH('Milepost_Geometry', 'Is_Active') AS HasIsActive,
-      COL_LENGTH('Milepost_Geometry', 'Track_Type') AS HasTrackType,
-      COL_LENGTH('Milepost_Geometry', 'Track_Number') AS HasTrackNumber
-  `);
+const parseSubdivisionId = (value) => {
+  if (value === undefined || value === null) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_ERROR_CODES.has(error.code)) return true;
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('connection lost') ||
+    message.includes('econnreset') ||
+    message.includes('failed to connect') ||
+    message.includes('timeout') ||
+    message.includes('aborted')
+  );
+};
+
+const queryWithRetry = async (requestFactory, query, logContext, maxRetries = 5) => {
+  let lastError;
+  let forceReconnect = false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      // Recover a fresh pool after transient socket failures.
+      const pool = await getConnectionWithRecovery({ forceReconnect });
+      const request = requestFactory(pool);
+      forceReconnect = false;
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+      forceReconnect = true;
+      const delay = 200 * (2 ** (attempt - 1));
+      logger.warn(`Map layer query attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms`, {
+        context: logContext,
+        error: error.message,
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+};
+
+const getMilepostSchemaFlagsWithRetry = async (logContext = 'milepostSchemaFlags') => {
+  const result = await queryWithRetry(
+    (pool) => pool.request(),
+    `
+      SELECT 
+        COL_LENGTH('Milepost_Geometry', 'Is_Active') AS HasIsActive,
+        COL_LENGTH('Milepost_Geometry', 'Track_Type') AS HasTrackType,
+        COL_LENGTH('Milepost_Geometry', 'Track_Number') AS HasTrackNumber
+    `,
+    logContext
+  );
   const row = result.recordset[0] || {};
   return {
     hasIsActive: row.HasIsActive !== null,
@@ -46,26 +101,19 @@ const getMilepostSchemaFlags = async (pool) => {
   };
 };
 
-const parseSubdivisionId = (value) => {
-  if (value === undefined || value === null) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isNaN(parsed) ? null : parsed;
-};
-
 class MapLayerController {
   async listLayers(req, res) {
     try {
       const agencyId = req.user.Agency_ID;
       const subdivisionId = parseSubdivisionId(req.query.subdivisionId);
-      const pool = await getConnection();
-
       const subdivisionFilter = subdivisionId ? 'AND t.Subdivision_ID = @subdivisionId' : '';
       const milepostSubdivisionFilter = subdivisionId ? 'AND mg.Subdivision_ID = @subdivisionId' : '';
 
-      const trackCountResult = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .query(`
+      const trackCountResult = await queryWithRetry(
+        (pool) => pool.request()
+          .input('agencyId', sql.Int, agencyId)
+          .input('subdivisionId', sql.Int, subdivisionId),
+        `
           SELECT COUNT(*) AS Count
           FROM Tracks t
           INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
@@ -78,15 +126,18 @@ class MapLayerController {
             )
             AND t.Latitude IS NOT NULL
             AND t.Longitude IS NOT NULL
-        `);
+        `,
+        'listLayers.trackCount'
+      );
 
-      const milepostFlags = await getMilepostSchemaFlags(pool);
-      const milepostActiveClause = milepostFlags.hasIsActive ? 'AND mg.Is_Active = 1' : '';
+      const milepostFlags = await getMilepostSchemaFlagsWithRetry('listLayers.schemaFlags');
+      const milepostActiveClause = milepostFlags.hasIsActive ? 'AND (mg.Is_Active = 1 OR mg.Is_Active IS NULL)' : '';
 
-      const milepostCountResult = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .query(`
+      const milepostCountResult = await queryWithRetry(
+        (poolForRequest) => poolForRequest.request()
+          .input('agencyId', sql.Int, agencyId)
+          .input('subdivisionId', sql.Int, subdivisionId),
+        `
           SELECT COUNT(*) AS Count
           FROM Milepost_Geometry mg
           INNER JOIN Subdivisions s ON mg.Subdivision_ID = s.Subdivision_ID
@@ -95,7 +146,9 @@ class MapLayerController {
             ${milepostActiveClause}
             AND mg.Latitude IS NOT NULL
             AND mg.Longitude IS NOT NULL
-        `);
+        `,
+        'listLayers.milepostCount'
+      );
 
       const trackCount = trackCountResult.recordset[0]?.Count || 0;
       const milepostCount = milepostCountResult.recordset[0]?.Count || 0;
@@ -114,21 +167,23 @@ class MapLayerController {
         const aliasParams = (layer.aliases || []).map((_, index) => `@alias${index}`);
         const aliasMatch = aliasParams.length
           ? `AND (
-              UPPER(ISNULL(t.Asset_Type,'')) IN (${aliasParams.join(', ')})
-              OR UPPER(ISNULL(t.Asset_SubType,'')) IN (${aliasParams.join(', ')})
+              ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Type,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
+              OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_SubType,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
               OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Name,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
             )`
           : '';
 
-        const countRequest = pool.request()
-          .input('agencyId', sql.Int, agencyId)
-          .input('subdivisionId', sql.Int, subdivisionId);
-
-        (layer.aliases || []).forEach((alias, index) => {
-          countRequest.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
-        });
-
-        const countResult = await countRequest.query(`
+        const countResult = await queryWithRetry(
+          (pool) => {
+            const request = pool.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('subdivisionId', sql.Int, subdivisionId);
+            (layer.aliases || []).forEach((alias, index) => {
+              request.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
+            });
+            return request;
+          },
+          `
           SELECT COUNT(*) AS Count
           FROM Tracks t
           INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
@@ -142,7 +197,9 @@ class MapLayerController {
             AND t.Latitude IS NOT NULL
             AND t.Longitude IS NOT NULL
             ${aliasMatch}
-        `);
+        `,
+          `listLayers.${layer.id}`
+        );
 
         layers.push({
           ...layer,
@@ -185,7 +242,6 @@ class MapLayerController {
         ? LAYER_DEFINITIONS.filter((layer) => layerIds.includes(layer.id))
         : LAYER_DEFINITIONS;
 
-      const pool = await getConnection();
       const subdivisionFilter = subdivisionId ? 'AND t.Subdivision_ID = @subdivisionId' : '';
       const milepostSubdivisionFilter = subdivisionId ? 'AND mg.Subdivision_ID = @subdivisionId' : '';
       const queryLike = `%${query}%`;
@@ -194,13 +250,13 @@ class MapLayerController {
 
       for (const layer of selectedLayers) {
         if (layer.type === 'tracks') {
-          const request = pool.request()
-            .input('agencyId', sql.Int, agencyId)
-            .input('subdivisionId', sql.Int, subdivisionId)
-            .input('limit', sql.Int, limit)
-            .input('qLike', sql.NVarChar, queryLike);
-
-          const result = await request.query(`
+          const result = await queryWithRetry(
+            (pool) => pool.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('subdivisionId', sql.Int, subdivisionId)
+              .input('limit', sql.Int, limit)
+              .input('qLike', sql.NVarChar, queryLike),
+            `
             SELECT TOP (@limit)
               t.Track_ID AS id,
               t.Latitude,
@@ -227,7 +283,9 @@ class MapLayerController {
                 t.LS LIKE @qLike
               )
             ORDER BY t.Track_ID
-          `);
+          `,
+            `searchLayers.${layer.id}`
+          );
 
           if (result.recordset.length) {
             results.push({
@@ -240,15 +298,16 @@ class MapLayerController {
         }
 
         if (layer.type === 'mileposts') {
-          const flags = await getMilepostSchemaFlags(pool);
-          const milepostActiveClause = flags.hasIsActive ? 'AND mg.Is_Active = 1' : '';
-          const request = pool.request()
-            .input('agencyId', sql.Int, agencyId)
-            .input('subdivisionId', sql.Int, subdivisionId)
-            .input('limit', sql.Int, limit)
-            .input('qLike', sql.NVarChar, queryLike);
+          const flags = await getMilepostSchemaFlagsWithRetry('searchLayers.mileposts.schemaFlags');
+          const milepostActiveClause = flags.hasIsActive ? 'AND (mg.Is_Active = 1 OR mg.Is_Active IS NULL)' : '';
 
-          const result = await request.query(`
+          const result = await queryWithRetry(
+            (poolForRequest) => poolForRequest.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('subdivisionId', sql.Int, subdivisionId)
+              .input('limit', sql.Int, limit)
+              .input('qLike', sql.NVarChar, queryLike),
+            `
             SELECT TOP (@limit)
               mg.Milepost_ID AS id,
               mg.Latitude,
@@ -268,7 +327,9 @@ class MapLayerController {
                 ISNULL(s.Subdivision_Name, '') LIKE @qLike
               )
             ORDER BY mg.MP
-          `);
+          `,
+            `searchLayers.${layer.id}`
+          );
 
           if (result.recordset.length) {
             results.push({
@@ -284,23 +345,25 @@ class MapLayerController {
           const aliasParams = (layer.aliases || []).map((_, index) => `@alias${index}`);
           const aliasMatch = aliasParams.length
             ? `AND (
-                UPPER(ISNULL(t.Asset_Type,'')) IN (${aliasParams.join(', ')})
-                OR UPPER(ISNULL(t.Asset_SubType,'')) IN (${aliasParams.join(', ')})
+                ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Type,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
+                OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_SubType,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
                 OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Name,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
               )`
             : '';
 
-          const request = pool.request()
-            .input('agencyId', sql.Int, agencyId)
-            .input('subdivisionId', sql.Int, subdivisionId)
-            .input('limit', sql.Int, limit)
-            .input('qLike', sql.NVarChar, queryLike);
-
-          (layer.aliases || []).forEach((alias, index) => {
-            request.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
-          });
-
-          const result = await request.query(`
+          const result = await queryWithRetry(
+            (pool) => {
+              const retryRequest = pool.request()
+                .input('agencyId', sql.Int, agencyId)
+                .input('subdivisionId', sql.Int, subdivisionId)
+                .input('limit', sql.Int, limit)
+                .input('qLike', sql.NVarChar, queryLike);
+              (layer.aliases || []).forEach((alias, index) => {
+                retryRequest.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
+              });
+              return retryRequest;
+            },
+            `
             SELECT TOP (@limit)
               t.Track_ID AS id,
               t.Latitude,
@@ -328,7 +391,9 @@ class MapLayerController {
                 s.Subdivision_Code LIKE @qLike
               )
             ORDER BY t.Track_ID
-          `);
+          `,
+            `searchLayers.${layer.id}`
+          );
 
           if (result.recordset.length) {
             results.push({
@@ -381,7 +446,6 @@ class MapLayerController {
         });
       }
 
-      const pool = await getConnection();
       const subdivisionFilter = subdivisionId ? 'AND t.Subdivision_ID = @subdivisionId' : '';
       const milepostSubdivisionFilter = subdivisionId ? 'AND mg.Subdivision_ID = @subdivisionId' : '';
       const trackBoundsFilter = hasBounds
@@ -392,15 +456,16 @@ class MapLayerController {
         : '';
 
       if (parsed.type === 'tracks') {
-        const result = await pool.request()
-          .input('agencyId', sql.Int, agencyId)
-          .input('subdivisionId', sql.Int, subdivisionId)
-          .input('limit', sql.Int, limit)
-          .input('minLat', sql.Float, minLat)
-          .input('maxLat', sql.Float, maxLat)
-          .input('minLng', sql.Float, minLng)
-          .input('maxLng', sql.Float, maxLng)
-          .query(`
+        const result = await queryWithRetry(
+          (pool) => pool.request()
+            .input('agencyId', sql.Int, agencyId)
+            .input('subdivisionId', sql.Int, subdivisionId)
+            .input('limit', sql.Int, limit)
+            .input('minLat', sql.Float, minLat)
+            .input('maxLat', sql.Float, maxLat)
+            .input('minLng', sql.Float, minLng)
+            .input('maxLng', sql.Float, maxLng),
+          `
             SELECT TOP (@limit)
               t.Track_ID,
               t.Subdivision_ID,
@@ -424,7 +489,9 @@ class MapLayerController {
               AND t.Longitude IS NOT NULL
               ${trackBoundsFilter}
             ORDER BY t.Track_ID
-          `);
+          `,
+          `getLayerData.${layerId}`
+        );
 
         return res.json({
           success: true,
@@ -437,20 +504,21 @@ class MapLayerController {
       }
 
       if (parsed.type === 'mileposts') {
-        const milepostFlags = await getMilepostSchemaFlags(pool);
-        const milepostActiveClause = milepostFlags.hasIsActive ? 'AND mg.Is_Active = 1' : '';
+        const milepostFlags = await getMilepostSchemaFlagsWithRetry(`getLayerData.${layerId}.schemaFlags`);
+        const milepostActiveClause = milepostFlags.hasIsActive ? 'AND (mg.Is_Active = 1 OR mg.Is_Active IS NULL)' : '';
         const trackTypeColumn = milepostFlags.hasTrackType ? 'mg.Track_Type' : 'NULL AS Track_Type';
         const trackNumberColumn = milepostFlags.hasTrackNumber ? 'mg.Track_Number' : 'NULL AS Track_Number';
 
-        const result = await pool.request()
-          .input('agencyId', sql.Int, agencyId)
-          .input('subdivisionId', sql.Int, subdivisionId)
-          .input('limit', sql.Int, limit)
-          .input('minLat', sql.Float, minLat)
-          .input('maxLat', sql.Float, maxLat)
-          .input('minLng', sql.Float, minLng)
-          .input('maxLng', sql.Float, maxLng)
-          .query(`
+        const result = await queryWithRetry(
+          (poolForRequest) => poolForRequest.request()
+            .input('agencyId', sql.Int, agencyId)
+            .input('subdivisionId', sql.Int, subdivisionId)
+            .input('limit', sql.Int, limit)
+            .input('minLat', sql.Float, minLat)
+            .input('maxLat', sql.Float, maxLat)
+            .input('minLng', sql.Float, minLng)
+            .input('maxLng', sql.Float, maxLng),
+          `
             SELECT TOP (@limit)
               mg.Milepost_ID,
               mg.Subdivision_ID,
@@ -468,7 +536,9 @@ class MapLayerController {
               AND mg.Longitude IS NOT NULL
               ${milepostBoundsFilter}
             ORDER BY mg.MP
-          `);
+          `,
+          `getLayerData.${layerId}`
+        );
 
         return res.json({
           success: true,
@@ -484,26 +554,28 @@ class MapLayerController {
         const aliasParams = (parsed.aliases || []).map((_, index) => `@alias${index}`);
         const aliasMatch = aliasParams.length
           ? `AND (
-              UPPER(ISNULL(t.Asset_Type,'')) IN (${aliasParams.join(', ')})
-              OR UPPER(ISNULL(t.Asset_SubType,'')) IN (${aliasParams.join(', ')})
+              ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Type,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
+              OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_SubType,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
               OR ${aliasParams.map((p) => `UPPER(ISNULL(t.Asset_Name,'')) LIKE '%' + ${p} + '%'`).join(' OR ')}
             )`
           : '';
 
-        const request = pool.request()
-          .input('agencyId', sql.Int, agencyId)
-          .input('subdivisionId', sql.Int, subdivisionId)
-          .input('limit', sql.Int, limit)
-          .input('minLat', sql.Float, minLat)
-          .input('maxLat', sql.Float, maxLat)
-          .input('minLng', sql.Float, minLng)
-          .input('maxLng', sql.Float, maxLng);
-
-        (parsed.aliases || []).forEach((alias, index) => {
-          request.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
-        });
-
-        const result = await request.query(`
+        const result = await queryWithRetry(
+          (pool) => {
+            const request = pool.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('subdivisionId', sql.Int, subdivisionId)
+              .input('limit', sql.Int, limit)
+              .input('minLat', sql.Float, minLat)
+              .input('maxLat', sql.Float, maxLat)
+              .input('minLng', sql.Float, minLng)
+              .input('maxLng', sql.Float, maxLng);
+            (parsed.aliases || []).forEach((alias, index) => {
+              request.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
+            });
+            return request;
+          },
+          `
           SELECT TOP (@limit)
             t.Track_ID,
             t.Subdivision_ID,
@@ -528,7 +600,9 @@ class MapLayerController {
             ${aliasMatch}
             ${trackBoundsFilter}
           ORDER BY t.Track_ID
-        `);
+        `,
+          `getLayerData.${layerId}`
+        );
 
         return res.json({
           success: true,

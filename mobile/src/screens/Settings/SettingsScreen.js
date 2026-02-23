@@ -205,7 +205,7 @@ const SettingsScreen = () => {
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>Sidekick</Text>
-        <Text style={styles.footerSubtext}>Â© 2026 All Rights Reserved</Text>
+        <Text style={styles.footerSubtext}>© RMedlin2026</Text>
       </View>
     </ScrollView>
   );

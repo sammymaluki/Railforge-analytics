@@ -1,16 +1,94 @@
 const Authority = require('../models/Authority');
 const AlertService = require('./alertService');
 const { logger } = require('../config/logger');
-const { getConnection, sql } = require('../config/database');
+const { getConnectionWithRecovery, sql } = require('../config/database');
 const {
   calculateMilepostFromGeometry,
   calculateTrackDistance
 } = require('../utils/geoCalculations');
 
+const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const MAX_MILEPOST_MATCH_DISTANCE_MILES = 2.0;
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_DB_CODES.has(error.code)) return true;
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('connection lost') ||
+    message.includes('econnreset') ||
+    message.includes('failed to connect') ||
+    message.includes('timeout') ||
+    message.includes('aborted')
+  );
+};
+
+const queryWithRetry = async (requestFactory, query, context, maxRetries = 5) => {
+  let lastError;
+  let forceReconnect = false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const pool = await getConnectionWithRecovery({ forceReconnect });
+      const request = requestFactory(pool);
+      forceReconnect = false;
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      forceReconnect = true;
+      const delay = 200 * (2 ** (attempt - 1));
+      logger.warn(`GPS query attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms`, {
+        context,
+        error: error.message
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+};
+
 class GPSService {
   constructor() {
     this.userPositions = new Map(); // Track last known positions
     this.updateInterval = 30000; // 30 seconds for boundary checks
+    this.authorityCache = new Map();
+    this.authorityCacheTtlMs = 15000;
+  }
+
+  async getAuthoritySnapshot(authorityId) {
+    const now = Date.now();
+    const cached = this.authorityCache.get(authorityId);
+    if (cached && now - cached.cachedAt < this.authorityCacheTtlMs) {
+      return cached.authority;
+    }
+
+    try {
+      const authority = await Authority.getAuthorityById(authorityId);
+      if (authority) {
+        this.authorityCache.set(authorityId, {
+          authority,
+          cachedAt: now,
+        });
+      }
+      return authority;
+    } catch (error) {
+      // If transient lookup fails, continue with the last known snapshot.
+      if (cached?.authority) {
+        logger.warn('Using cached authority snapshot after lookup failure', {
+          authorityId,
+          error: error.message,
+        });
+        return cached.authority;
+      }
+      throw error;
+    }
   }
 
   async processGPSUpdate(gpsData) {
@@ -29,7 +107,7 @@ class GPSService {
       await this.logGPSPosition(gpsData);
 
       // Get authority details
-      const authority = await Authority.getAuthorityById(authorityId);
+      const authority = await this.getAuthoritySnapshot(authorityId);
       
       if (!authority || !authority.Is_Active) {
         return { logged: true, authority: null };
@@ -47,10 +125,8 @@ class GPSService {
 
         // Check boundary alerts using track-based distance
         const boundaryDistances = await this.calculateDistanceToAuthorityBoundary(
-          authority.Subdivision_ID,
-          currentMP,
-          authority.Begin_MP,
-          authority.End_MP
+          authority,
+          currentMP
         );
 
         await AlertService.checkBoundaryAlerts(
@@ -91,8 +167,6 @@ class GPSService {
   }
 
   async logGPSPosition(gpsData) {
-    const pool = getConnection();
-    
     try {
       const query = `
         INSERT INTO GPS_Logs (
@@ -106,16 +180,19 @@ class GPSService {
         )
       `;
 
-      const result = await pool.request()
-        .input('userId', sql.Int, gpsData.userId)
-        .input('authorityId', sql.Int, gpsData.authorityId)
-        .input('latitude', sql.Decimal(10,8), gpsData.latitude)
-        .input('longitude', sql.Decimal(11,8), gpsData.longitude)
-        .input('speed', sql.Decimal(5,2), gpsData.speed)
-        .input('heading', sql.Decimal(5,2), gpsData.heading)
-        .input('accuracy', sql.Decimal(5,2), gpsData.accuracy)
-        .input('isOffline', sql.Bit, gpsData.isOffline ? 1 : 0)
-        .query(query);
+      const result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('userId', sql.Int, gpsData.userId)
+          .input('authorityId', sql.Int, gpsData.authorityId)
+          .input('latitude', sql.Decimal(10, 8), gpsData.latitude)
+          .input('longitude', sql.Decimal(11, 8), gpsData.longitude)
+          .input('speed', sql.Decimal(5, 2), gpsData.speed)
+          .input('heading', sql.Decimal(5, 2), gpsData.heading)
+          .input('accuracy', sql.Decimal(5, 2), gpsData.accuracy)
+          .input('isOffline', sql.Bit, gpsData.isOffline ? 1 : 0),
+        query,
+        'logGPSPosition.insert'
+      );
 
       return result.recordset[0];
 
@@ -133,8 +210,6 @@ class GPSService {
 
   async calculateMilepost(subdivisionId, latitude, longitude) {
     try {
-      const pool = getConnection();
-      
       // Get all milepost geometry for this subdivision
       const query = `
         SELECT MP, Latitude, Longitude, Track_Type, Track_Number
@@ -144,9 +219,12 @@ class GPSService {
         ORDER BY MP
       `;
       
-      const result = await pool.request()
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .query(query);
+      const result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('subdivisionId', sql.Int, subdivisionId),
+        query,
+        'calculateMilepost.loadGeometry'
+      );
       
       if (result.recordset.length === 0) {
         logger.warn(`No milepost geometry found for subdivision ${subdivisionId}`);
@@ -169,6 +247,11 @@ class GPSService {
         logger.warn(`User position is ${milepostData.distanceFromTrack.toFixed(2)} miles from track`);
       }
 
+      // If we are clearly far off the corridor, avoid publishing a false milepost.
+      if (milepostData.distanceFromTrack > MAX_MILEPOST_MATCH_DISTANCE_MILES) {
+        return null;
+      }
+
       return {
         milepost: milepostData.milepost,
         confidence: milepostData.confidence,
@@ -188,8 +271,6 @@ class GPSService {
    */
   async calculateTrackDistanceBetween(subdivisionId, mp1, mp2) {
     try {
-      const pool = getConnection();
-      
       // Get milepost geometry
       const query = `
         SELECT MP, Latitude, Longitude
@@ -203,11 +284,14 @@ class GPSService {
       const minMP = Math.min(mp1, mp2);
       const maxMP = Math.max(mp1, mp2);
       
-      const result = await pool.request()
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .input('minMP', sql.Decimal(10, 4), minMP)
-        .input('maxMP', sql.Decimal(10, 4), maxMP)
-        .query(query);
+      const result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('subdivisionId', sql.Int, subdivisionId)
+          .input('minMP', sql.Decimal(10, 4), minMP)
+          .input('maxMP', sql.Decimal(10, 4), maxMP),
+        query,
+        'calculateTrackDistanceBetween.loadGeometry'
+      );
       
       if (result.recordset.length === 0) {
         // Fall back to simple milepost difference
@@ -258,8 +342,6 @@ class GPSService {
   }
 
   async queueForSync(gpsData) {
-    const pool = getConnection();
-    
     try {
       // Get device ID for user
       const deviceQuery = `
@@ -268,9 +350,12 @@ class GPSService {
         WHERE User_ID = @userId AND Is_Active = 1
       `;
       
-      const deviceResult = await pool.request()
-        .input('userId', sql.Int, gpsData.userId)
-        .query(deviceQuery);
+      const deviceResult = await queryWithRetry(
+        (pool) => pool.request()
+          .input('userId', sql.Int, gpsData.userId),
+        deviceQuery,
+        'queueForSync.getDevice'
+      );
       
       if (deviceResult.recordset.length === 0) {
         return;
@@ -279,16 +364,19 @@ class GPSService {
       const deviceId = deviceResult.recordset[0].Device_ID;
       
       // Queue for sync
-      await pool.request()
-        .input('deviceId', sql.Int, deviceId)
-        .input('tableName', sql.NVarChar, 'GPS_Logs')
-        .input('recordId', sql.Int, 0) // Will be set on sync
-        .input('operation', sql.NVarChar, 'INSERT')
-        .input('syncData', sql.NVarChar, JSON.stringify(gpsData))
-        .query(`
+      await queryWithRetry(
+        (pool) => pool.request()
+          .input('deviceId', sql.Int, deviceId)
+          .input('tableName', sql.NVarChar, 'GPS_Logs')
+          .input('recordId', sql.Int, 0) // Will be set on sync
+          .input('operation', sql.NVarChar, 'INSERT')
+          .input('syncData', sql.NVarChar, JSON.stringify(gpsData)),
+        `
           INSERT INTO Data_Sync_Queue (Device_ID, Table_Name, Record_ID, Operation, Sync_Data)
           VALUES (@deviceId, @tableName, @recordId, @operation, @syncData)
-        `);
+        `,
+        'queueForSync.insert'
+      );
       
       logger.debug(`GPS data queued for sync for user ${gpsData.userId}`);
       

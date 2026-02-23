@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import DropDownPicker from 'react-native-dropdown-picker';
 import { useSelector, useDispatch } from 'react-redux';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
@@ -42,6 +43,8 @@ import logger from '../../utils/logger';
 import { setLayerVisibility } from '../../store/slices/mapSlice';
 import { useIsFocused } from '@react-navigation/native';
 import { logout } from '../../store/slices/authSlice';
+import { fetchPins } from '../../store/slices/pinSlice';
+import * as Clipboard from 'expo-clipboard';
 import { 
   COLORS, 
   SPACING, 
@@ -52,6 +55,40 @@ import {
 } from '../../constants/theme';
 
 const { width, height } = Dimensions.get('window');
+const RAILROAD_ADDRESS_REQUEST_INTERVAL_MS = 5000;
+const MIN_MOVE_FOR_ADDRESS_REFRESH_METERS = 25;
+
+const getAgencyIdFromUser = (user) => {
+  if (!user) return null;
+
+  const rawAgencyId =
+    user.Agency_ID ??
+    user.agency_id ??
+    user.agencyId ??
+    user.AgencyId ??
+    user.agency?.Agency_ID ??
+    user.agency?.agency_id ??
+    user.agency?.agencyId ??
+    user.Agency?.Agency_ID ??
+    user.Agency?.agency_id ??
+    user.Agency?.agencyId;
+
+  const agencyId = Number(rawAgencyId);
+  return Number.isFinite(agencyId) ? agencyId : null;
+};
+
+const calculateDistanceMeters = (lat1, lng1, lat2, lng2) => {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
 
 // Dark map style to match screenshots
 const customMapStyle = [
@@ -88,12 +125,17 @@ const MapScreen = () => {
   const dispatch = useDispatch();
   const mapRef = useRef(null);
   const layerFetchTimeout = useRef(null);
+  const layerFetchInProgress = useRef(false);
   const isMounted = useRef(true);
+  const nearestAddressInFlight = useRef(false);
+  const lastNearestAddressFetchAt = useRef(0);
+  const lastNearestAddressCoords = useRef(null);
   const isFocused = useIsFocused();
   const HOME_POSITION_KEY = '@HerzogDB:map_home_position';
   
   const { user } = useSelector((state) => state.auth);
   const { currentAuthority } = useSelector((state) => state.authority);
+  const pins = useSelector((state) => state.pins?.pins || []);
   const mapStyleId = useSelector((state) => state.map.mapStyleId);
   const storedLayerVisibility = useSelector((state) => state.map.layerVisibility || {});
   const { currentPosition, isTracking } = useSelector((state) => state.gps);
@@ -130,6 +172,9 @@ const MapScreen = () => {
     trackNumber: '',
   });
   const [trackSearchResult, setTrackSearchResult] = useState(null);
+  const [trackSearchSubdivisions, setTrackSearchSubdivisions] = useState([]);
+  const [trackSearchSubdivisionId, setTrackSearchSubdivisionId] = useState(null);
+  const [trackSearchSubdivisionOpen, setTrackSearchSubdivisionOpen] = useState(false);
   
   // New Follow-Me mode state
   const [currentMilepost, setCurrentMilepost] = useState(null);
@@ -232,6 +277,7 @@ const MapScreen = () => {
     if (currentAuthority && currentAuthority.Subdivision_ID) {
       loadMilepostData(currentAuthority.Subdivision_ID);
       setSubdivision(currentAuthority.Subdivision_Name);
+      setTrackSearchSubdivisionId((prev) => prev ?? currentAuthority.Subdivision_ID);
     }
 
     if (currentAuthority) {
@@ -243,12 +289,79 @@ const MapScreen = () => {
     }
   }, [currentAuthority]);
 
+  useEffect(() => {
+    const loadTrackSearchSubdivisions = async () => {
+      const agencyId = getAgencyIdFromUser(user);
+      if (!agencyId) return;
+      try {
+        const response = await apiService.getAgencySubdivisions(agencyId);
+        const subdivisionList = Array.isArray(response?.data)
+          ? response.data
+          : Array.isArray(response?.subdivisions)
+            ? response.subdivisions
+            : Array.isArray(response?.data?.data)
+              ? response.data.data
+            : Array.isArray(response?.data?.subdivisions)
+              ? response.data.subdivisions
+              : [];
+
+        const subdivisions = subdivisionList
+          .map((sub) => {
+            const id = sub.Subdivision_ID ?? sub.subdivision_id;
+            const code = sub.Subdivision_Code ?? sub.subdivision_code ?? '';
+            const name = sub.Subdivision_Name ?? sub.subdivision_name ?? '';
+            const parsedId = Number(id);
+            if (!Number.isFinite(parsedId)) return null;
+            return {
+              label: [code, name].filter(Boolean).join(' - ') || `Subdivision ${parsedId}`,
+              value: parsedId,
+            };
+          })
+          .filter(Boolean);
+        setTrackSearchSubdivisions(subdivisions);
+      } catch (error) {
+        logger.warn('Map', 'Failed to load track-search subdivisions', error);
+      }
+    };
+
+    loadTrackSearchSubdivisions();
+  }, [user]);
+
   // Load layer list when screen mounts or authority changes
   useEffect(() => {
     if (isFocused) {
       loadLayers();
     }
   }, [currentAuthority?.Subdivision_ID, isFocused]);
+
+  useEffect(() => {
+    if (!isFocused || !currentAuthority?.Authority_ID) return;
+    dispatch(fetchPins(currentAuthority.Authority_ID));
+  }, [dispatch, isFocused, currentAuthority?.Authority_ID]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const autoEnableGps = async () => {
+      if (!isFocused || gpsActive) {
+        return;
+      }
+
+      try {
+        await enableGpsTracking(false);
+        if (!cancelled) {
+          setGpsActive(true);
+        }
+      } catch (error) {
+        logger.warn('GPS', 'Auto-enable skipped', error);
+      }
+    };
+
+    autoEnableGps();
+    return () => {
+      cancelled = true;
+    };
+  }, [isFocused, currentAuthority?.Authority_ID, gpsActive]);
 
   // Sync local visibility when store visibility updates
   useEffect(() => {
@@ -266,7 +379,7 @@ const MapScreen = () => {
       if (isFocused) {
         loadVisibleLayerData();
       }
-    }, 500);
+    }, 1200);
     return () => {
       if (layerFetchTimeout.current) {
         clearTimeout(layerFetchTimeout.current);
@@ -289,19 +402,54 @@ const MapScreen = () => {
   // Fetch nearest railroad address from backend API
   const fetchNearestRailroadAddress = async () => {
     try {
+      if (!currentPosition?.latitude || !currentPosition?.longitude) {
+        return;
+      }
+
+      if (nearestAddressInFlight.current) {
+        return;
+      }
+
+      const now = Date.now();
+      const lastCoords = lastNearestAddressCoords.current;
+      const movedMeters = lastCoords
+        ? calculateDistanceMeters(
+          lastCoords.latitude,
+          lastCoords.longitude,
+          currentPosition.latitude,
+          currentPosition.longitude
+        )
+        : Infinity;
+
+      const recentlyFetched = now - lastNearestAddressFetchAt.current < RAILROAD_ADDRESS_REQUEST_INTERVAL_MS;
+      if (recentlyFetched && movedMeters < MIN_MOVE_FOR_ADDRESS_REFRESH_METERS) {
+        return;
+      }
+
       // Check if we have required data
       if (!currentAuthority || !currentAuthority.Subdivision_ID) {
         setNearestRailroadAddress('No active authority');
         return;
       }
 
-      setLoadingRailroadAddress(true);
-      
-      const response = await apiService.api.post('/tracks/interpolate-milepost', {
+      nearestAddressInFlight.current = true;
+      lastNearestAddressFetchAt.current = now;
+      lastNearestAddressCoords.current = {
         latitude: currentPosition.latitude,
         longitude: currentPosition.longitude,
-        subdivisionId: currentAuthority.Subdivision_ID,
-      });
+      };
+      setLoadingRailroadAddress(true);
+
+      const response = await apiService.requestWithRetry(
+        () =>
+          apiService.api.post('/tracks/interpolate-milepost', {
+            latitude: currentPosition.latitude,
+            longitude: currentPosition.longitude,
+            subdivisionId: currentAuthority.Subdivision_ID,
+          }),
+        2,
+        800
+      );
       
       if (response.data) {
         const { milepost, distance } = response.data;
@@ -322,7 +470,14 @@ const MapScreen = () => {
       
       setLoadingRailroadAddress(false);
     } catch (error) {
-      logger.error('GPS', 'Failed to fetch nearest railroad address', error);
+      const status = error?.response?.status;
+      if (status === 404) {
+        logger.info('GPS', 'No railroad address nearby', {
+          reason: 'No track data found in subdivision',
+        });
+      } else {
+        logger.error('GPS', 'Failed to fetch nearest railroad address', error);
+      }
       setLoadingRailroadAddress(false);
       setNearestRailroadAddress('None found');
       
@@ -336,6 +491,8 @@ const MapScreen = () => {
           setNearestRailroadAddress(address);
         }
       }
+    } finally {
+      nearestAddressInFlight.current = false;
     }
   };
 
@@ -459,7 +616,7 @@ const MapScreen = () => {
     try {
       const data = await apiService.getMapLayerData(layerId, {
         subdivisionId: currentAuthority?.Subdivision_ID || undefined,
-        limit: 2000,
+        limit: 5000,
         ...bounds,
       });
       if (!isMounted.current) return;
@@ -473,11 +630,16 @@ const MapScreen = () => {
   };
 
   const loadVisibleLayerData = async () => {
+    if (layerFetchInProgress.current) {
+      return;
+    }
+
     const visibility = Object.keys(storedLayerVisibility).length
       ? storedLayerVisibility
       : layerVisibility;
+
     const visibleLayerIds = layers
-      .filter((layer) => visibility[layer.id])
+      .filter((layer) => visibility[layer.id] && (layer.count || 0) > 0)
       .map((layer) => layer.id);
 
     if (visibleLayerIds.length === 0) return;
@@ -491,9 +653,17 @@ const MapScreen = () => {
       maxLng: region.longitude + lngDelta * 0.6,
     };
 
-    await Promise.all(
-      visibleLayerIds.map((layerId) => loadLayerData(layerId, bounds))
-    );
+    layerFetchInProgress.current = true;
+
+    try {
+      // Keep request pressure low to avoid DB connection pool spikes.
+      for (const layerId of visibleLayerIds) {
+        // eslint-disable-next-line no-await-in-loop
+        await loadLayerData(layerId, bounds);
+      }
+    } finally {
+      layerFetchInProgress.current = false;
+    }
   };
 
   const handleMenuAction = async (action) => {
@@ -550,8 +720,9 @@ const MapScreen = () => {
   };
 
   const handleTrackSearch = async () => {
-    if (!currentAuthority?.Subdivision_ID) {
-      Alert.alert('Track Search', 'No active subdivision available.');
+    const selectedSubdivisionId = trackSearchSubdivisionId || currentAuthority?.Subdivision_ID;
+    if (!selectedSubdivisionId) {
+      Alert.alert('Track Search', 'Please select a subdivision.');
       return;
     }
 
@@ -564,7 +735,7 @@ const MapScreen = () => {
     setTrackSearchLoading(true);
     try {
       const response = await apiService.api.post('/tracks/location-search', {
-        subdivisionId: currentAuthority.Subdivision_ID,
+        subdivisionId: selectedSubdivisionId,
         ls: trackSearch.lineSegment || null,
         milepost: milepostValue,
         trackType: trackSearch.trackType || null,
@@ -597,7 +768,7 @@ const MapScreen = () => {
       const serverMessage = error?.response?.data?.error || error?.response?.data?.message || (error?.response ? `Server error: ${error.response.status}` : error.message);
       // Log parameters used for the request to help debugging missing data on backend
       console.warn('Track search params:', {
-        subdivisionId: currentAuthority?.Subdivision_ID,
+        subdivisionId: selectedSubdivisionId,
         ls: trackSearch.lineSegment || null,
         milepost: trackSearch.milepost,
         trackType: trackSearch.trackType || null,
@@ -771,6 +942,105 @@ const MapScreen = () => {
     }
   };
 
+  const enableGpsTracking = async (showAlerts = true) => {
+    const { status: foregroundStatus } = await Location.getForegroundPermissionsAsync();
+
+    if (foregroundStatus !== 'granted') {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        if (showAlerts) {
+          Alert.alert(
+            'Permission Required',
+            'Sidekick needs location permission to track your position on the tracks.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => Linking.openSettings() },
+            ]
+          );
+        }
+        throw new Error('Location permission denied');
+      }
+    }
+
+    await gpsTrackingService.init();
+    await gpsTrackingService.startTracking(currentAuthority || null);
+    setGpsActive(true);
+    logger.info('GPS', 'GPS tracking enabled successfully');
+
+    if (showAlerts) {
+      Alert.alert('GPS Enabled', 'Location tracking is now active.');
+    }
+  };
+
+  const disableGpsTracking = async (showAlerts = true) => {
+    await gpsTrackingService.stopTracking();
+    setGpsActive(false);
+    setNearestRailroadAddress('None found');
+    logger.info('GPS', 'GPS tracking disabled');
+
+    if (showAlerts) {
+      Alert.alert('GPS Disabled', 'Location tracking has been stopped.');
+    }
+  };
+
+  const getCurrentMapDestination = () => {
+    if (currentPosition?.latitude && currentPosition?.longitude) {
+      return `${currentPosition.latitude},${currentPosition.longitude}`;
+    }
+    return null;
+  };
+
+  const copyCurrentCoordinates = async () => {
+    const destination = getCurrentMapDestination();
+    if (!destination) {
+      Alert.alert('Map', 'No live GPS position available yet.');
+      return;
+    }
+    await Clipboard.setStringAsync(destination);
+    Alert.alert('Copied', 'Coordinates copied to clipboard.');
+  };
+
+  const copyNearestRailAddress = async () => {
+    if (!nearestRailroadAddress || nearestRailroadAddress === 'None found') {
+      Alert.alert('Map', 'No nearby railroad address available.');
+      return;
+    }
+    await Clipboard.setStringAsync(nearestRailroadAddress);
+    Alert.alert('Copied', 'Nearest railroad address copied to clipboard.');
+  };
+
+  const openAppleMaps = async () => {
+    const destination = getCurrentMapDestination();
+    if (!destination) {
+      Alert.alert('Map', 'No live GPS position available yet.');
+      return;
+    }
+    if (Platform.OS !== 'ios') {
+      Alert.alert('Apple Maps', 'Apple Maps is available on iOS only.');
+      return;
+    }
+    await Linking.openURL(`http://maps.apple.com/?ll=${destination}&q=Rail+Location`);
+  };
+
+  const openGoogleMaps = async () => {
+    const destination = getCurrentMapDestination();
+    if (!destination) {
+      Alert.alert('Map', 'No live GPS position available yet.');
+      return;
+    }
+
+    if (Platform.OS === 'ios') {
+      const navUrl = `comgooglemaps://?daddr=${destination}&directionsmode=driving`;
+      const canOpen = await Linking.canOpenURL(navUrl);
+      if (canOpen) {
+        await Linking.openURL(navUrl);
+        return;
+      }
+    }
+
+    await Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`);
+  };
+
   const renderAuthorityBoundaries = () => {
     if (!currentAuthority) return null;
 
@@ -837,6 +1107,36 @@ const MapScreen = () => {
     return markers;
   }, [layers, layerData, layerVisibility, storedLayerVisibility]);
 
+  const getPinColor = (category) => {
+    const normalized = String(category || '').toLowerCase();
+    if (normalized.includes('defect')) return '#F44336';
+    if (normalized.includes('obstruction')) return '#FF3B30';
+    if (normalized.includes('monitor')) return '#FF9800';
+    if (normalized.includes('scrap')) return '#2196F3';
+    return '#00B894';
+  };
+
+  const pinMarkers = useMemo(() => {
+    return (pins || [])
+      .map((pin, index) => {
+        const latitude = Number(pin.latitude ?? pin.Latitude);
+        const longitude = Number(pin.longitude ?? pin.Longitude);
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+          return null;
+        }
+        return {
+          key: `pin-${pin.id || pin.Pin_ID || index}`,
+          latitude,
+          longitude,
+          title: pin.category || pin.Pin_Category || 'Pin Drop',
+          description: pin.notes || pin.Notes || (pin.milepost ? `MP ${pin.milepost}` : 'Pin drop'),
+          color: getPinColor(pin.category || pin.Pin_Category),
+          pending: Boolean(pin.syncPending),
+        };
+      })
+      .filter(Boolean);
+  }, [pins]);
+
   const renderControls = () => {
     if (!showControls) return null;
 
@@ -849,66 +1149,16 @@ const MapScreen = () => {
             <Switch
               value={gpsActive}
               onValueChange={async (value) => {
-              if (value) {
-                // Enable GPS tracking
                 try {
-                  // First check if we have location permissions
-                  const { status: foregroundStatus } = await Location.getForegroundPermissionsAsync();
-                  
-                  if (foregroundStatus !== 'granted') {
-                    const { status } = await Location.requestForegroundPermissionsAsync();
-                    if (status !== 'granted') {
-                      Alert.alert(
-                        'Permission Required',
-                        'Sidekick needs location permission to track your position on the tracks. Please enable location access in your device settings.',
-                        [
-                          { text: 'Cancel', style: 'cancel' },
-                          { text: 'Open Settings', onPress: () => Linking.openSettings() },
-                        ]
-                      );
-                      return;
-                    }
+                  if (value) {
+                    await enableGpsTracking(true);
+                  } else {
+                    await disableGpsTracking(true);
                   }
-                  
-                  // Check if we have an active authority
-                  if (!currentAuthority) {
-                    Alert.alert(
-                      'No Active Authority',
-                      'You need to enter an authority before enabling GPS tracking.',
-                      [{ text: 'OK' }]
-                    );
-                    return;
-                  }
-                  
-                  // Initialize and start GPS tracking
-                  await gpsTrackingService.init();
-                  await gpsTrackingService.startTracking(currentAuthority);
-                  setGpsActive(true);
-                  logger.info('GPS', 'GPS tracking enabled successfully');
-                  
-                  Alert.alert('GPS Enabled', 'Location tracking is now active.');
                 } catch (error) {
-                  logger.error('GPS', 'Failed to enable GPS tracking', error);
-                  Alert.alert(
-                    'GPS Error',
-                    error.message || 'Failed to enable GPS tracking. Please try again.',
-                    [{ text: 'OK' }]
-                  );
-                  setGpsActive(false);
+                  logger.error('GPS', 'Failed to update GPS tracking state', error);
+                  setGpsActive(Boolean(isTracking));
                 }
-              } else {
-                // Disable GPS tracking
-                try {
-                  await gpsTrackingService.stopTracking();
-                  setGpsActive(false);
-                  setNearestRailroadAddress('None found');
-                  logger.info('GPS', 'GPS tracking disabled');
-                  
-                  Alert.alert('GPS Disabled', 'Location tracking has been stopped.');
-                } catch (error) {
-                  logger.error('GPS', 'Failed to stop GPS tracking', error);
-                }
-              }
             }}
             trackColor={{ false: '#CCCCCC', true: '#34C759' }}
             thumbColor={gpsActive ? '#FFFFFF' : '#F4F3F4'}
@@ -989,7 +1239,7 @@ const MapScreen = () => {
               <Text style={styles.infoValue}>
                 {currentPosition.latitude.toFixed(6)}, {currentPosition.longitude.toFixed(6)}
               </Text>
-              <TouchableOpacity style={styles.iconButton}>
+              <TouchableOpacity style={styles.iconButton} onPress={copyCurrentCoordinates}>
                 <MaterialCommunityIcons name="content-copy" size={18} color="#FFD100" />
               </TouchableOpacity>
             </View>
@@ -1011,10 +1261,18 @@ const MapScreen = () => {
               <Text style={styles.infoValue}>{nearestRailroadAddress}</Text>
             )}
             {nearestRailroadAddress !== 'None found' && !loadingRailroadAddress && (
-              <TouchableOpacity style={styles.iconButton}>
+              <TouchableOpacity style={styles.iconButton} onPress={copyNearestRailAddress}>
                 <MaterialCommunityIcons name="content-copy" size={18} color="#FFD100" />
               </TouchableOpacity>
             )}
+          </View>
+          <View style={styles.mapActionRow}>
+            <TouchableOpacity style={styles.mapActionButton} onPress={openAppleMaps}>
+              <Text style={styles.mapActionText}>Apple Maps</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.mapActionButton} onPress={openGoogleMaps}>
+              <Text style={styles.mapActionText}>Google Maps</Text>
+            </TouchableOpacity>
           </View>
         </View>
         </>
@@ -1123,6 +1381,26 @@ const MapScreen = () => {
             </View>
           </Marker>
         )}
+
+        {/* Pin drop markers */}
+        {pinMarkers.map((pin) => (
+          <Marker
+            key={pin.key}
+            coordinate={{ latitude: pin.latitude, longitude: pin.longitude }}
+            title={pin.title}
+            description={pin.pending ? `${pin.description} (Pending sync)` : pin.description}
+            pinColor={pin.color}
+            tracksViewChanges={false}
+          >
+            <View style={[styles.layerMarker, { borderColor: pin.color }]}>
+              <MaterialCommunityIcons
+                name={pin.pending ? 'map-marker-alert' : 'map-marker'}
+                size={18}
+                color={pin.color}
+              />
+            </View>
+          </Marker>
+        ))}
 
         {/* Authority boundaries */}
         {renderAuthorityBoundaries()}
@@ -1261,6 +1539,28 @@ const MapScreen = () => {
               <TouchableOpacity onPress={() => setTrackSearchVisible(false)}>
                 <MaterialCommunityIcons name="close" size={18} color="#666666" />
               </TouchableOpacity>
+            </View>
+
+            <View style={styles.trackSearchField}>
+              <Text style={styles.trackSearchLabel}>Subdivision</Text>
+              <DropDownPicker
+                open={trackSearchSubdivisionOpen}
+                value={trackSearchSubdivisionId}
+                items={trackSearchSubdivisions}
+                setOpen={setTrackSearchSubdivisionOpen}
+                setValue={(callback) => {
+                  const nextValue = callback(trackSearchSubdivisionId);
+                  setTrackSearchSubdivisionId(nextValue);
+                }}
+                setItems={setTrackSearchSubdivisions}
+                placeholder="Select subdivision"
+                style={styles.trackSearchInput}
+                dropDownContainerStyle={styles.trackSearchDropdownContainer}
+                textStyle={{ color: '#333333', fontSize: 12 }}
+                listMode="SCROLLVIEW"
+                zIndex={3000}
+                zIndexInverse={1000}
+              />
             </View>
 
             <View style={styles.trackSearchField}>
@@ -1471,6 +1771,25 @@ const styles = StyleSheet.create({
     padding: 4,
     marginLeft: 8,
   },
+  mapActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  mapActionButton: {
+    flex: 1,
+    backgroundColor: '#FFF4CC',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#FFD100',
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  mapActionText: {
+    color: '#5A4A00',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   gpsToggleButton: {
     position: 'absolute',
     top: 20,
@@ -1565,6 +1884,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#333333',
     backgroundColor: '#FAFAFA',
+  },
+  trackSearchDropdownContainer: {
+    borderWidth: 1,
+    borderColor: '#DDDDDD',
+    backgroundColor: '#FFFFFF',
   },
   trackSearchButton: {
     marginTop: 6,

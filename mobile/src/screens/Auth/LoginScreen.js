@@ -151,7 +151,7 @@ const LoginScreen = ({ navigation }) => {
               Secure railroad situational awareness system
             </Text>
             <Text style={styles.footerSubtext}>
-              Â© {new Date().getFullYear()} Herzog Railroad Services
+              © RMedlin2026
             </Text>
           </View>
         </View>

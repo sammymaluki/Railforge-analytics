@@ -2,6 +2,9 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { logger } = require('../config/logger');
 
+const authUserCache = new Map();
+const AUTH_USER_CACHE_TTL_MS = 30000;
+
 const auth = async (req, res, next) => {
   try {
     // Get token from header
@@ -17,8 +20,22 @@ const auth = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Find user
-    const user = await User.findById(decoded.userId);
+    // Use a short-lived cache to avoid hammering DB for each parallel API request.
+    const cacheKey = `${decoded.userId}:${decoded.agencyId || ''}:${decoded.role || ''}`;
+    const cached = authUserCache.get(cacheKey);
+
+    let user = null;
+    if (cached && cached.expiresAt > Date.now()) {
+      user = cached.user;
+    } else {
+      user = await User.findById(decoded.userId);
+      if (user) {
+        authUserCache.set(cacheKey, {
+          user,
+          expiresAt: Date.now() + AUTH_USER_CACHE_TTL_MS,
+        });
+      }
+    }
     
     if (!user || !user.Is_Active) {
       return res.status(401).json({
@@ -41,6 +58,14 @@ const auth = async (req, res, next) => {
     next();
   } catch (error) {
     logger.error('Authentication error:', error);
+    
+    // Handle database connection errors
+    if (error.code === 'ESOCKET' || error.message?.includes('Connection lost')) {
+      return res.status(503).json({
+        success: false,
+        error: 'Database service temporarily unavailable'
+      });
+    }
     
     if (error.name === 'JsonWebTokenError') {
       return res.status(401).json({

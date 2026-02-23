@@ -83,10 +83,33 @@ const PinTypeManagement = () => {
     try {
       const response = await api.get(`/config/agencies/${agencyId}/pin-types`);
       if (response.data.success) {
-        setPinTypes(response.data.data.pinTypes || {});
+        const pinTypesArray = response.data.data.pinTypes || [];
+        
+        // Transform array into grouped object by category
+        const groupedPinTypes = {};
+        if (Array.isArray(pinTypesArray)) {
+          pinTypesArray.forEach((pin) => {
+            const category = pin.category || pin.Pin_Category || 'Other';
+            if (!groupedPinTypes[category]) {
+              groupedPinTypes[category] = [];
+            }
+            groupedPinTypes[category].push({
+              pinTypeId: pin.pinTypeId || pin.Pin_Type_ID,
+              category: category,
+              subtype: pin.subtype || pin.Pin_Subtype,
+              color: pin.color || pin.Color,
+              iconUrl: pin.iconUrl || pin.Icon_URL,
+              sortOrder: pin.sortOrder || pin.Sort_Order || 0,
+              isActive: pin.isActive !== undefined ? pin.isActive : true
+            });
+          });
+        }
+        
+        setPinTypes(groupedPinTypes);
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to load pin types');
+      setPinTypes({}); // Ensure pinTypes is always an object
     } finally {
       setLoading(false);
     }

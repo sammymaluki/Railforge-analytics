@@ -47,7 +47,7 @@ const initialState = {
     longitudeDelta: 0.1,
   },
   mapType: 'standard', // 'standard', 'satellite', 'hybrid'
-  mapStyleId: 'dark_gray_labels',
+  mapStyleId: 'imagery_labels',
   followMeEnabled: false,
   
   // Track data

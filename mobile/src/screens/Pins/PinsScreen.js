@@ -9,6 +9,8 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Linking,
+  Share,
 } from 'react-native';
 import { useSelector, useDispatch } from 'react-redux';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -32,7 +34,10 @@ const PinsScreen = () => {
     }, [currentAuthority, dispatch])
   );
 
-  const categories = ['All', 'Scrap-Rail', 'Scrap-Ties', 'Monitor Location', 'Defect', 'Obstruction'];
+  const categories = [
+    'All',
+    ...Array.from(new Set((pins || []).map((pin) => pin.category).filter(Boolean))),
+  ];
 
   const filteredPins = selectedCategory === 'All' 
     ? pins 
@@ -60,6 +65,51 @@ const PinsScreen = () => {
 
   const handleDropNewPin = () => {
     navigation.navigate('PinForm');
+  };
+
+  const handleEmailPinList = async () => {
+    if (!filteredPins.length) {
+      Alert.alert('No Pins', 'There are no pins to email in this view.');
+      return;
+    }
+
+    const timestamp = new Date().toLocaleString();
+    const listText = filteredPins
+      .map((pin, index) => {
+        const lat = Number(pin.latitude);
+        const lng = Number(pin.longitude);
+        const coords = Number.isFinite(lat) && Number.isFinite(lng)
+          ? `${lat.toFixed(6)}, ${lng.toFixed(6)}`
+          : 'Unknown';
+        const mp = pin.milepost != null && pin.milepost !== '' ? `MP ${pin.milepost}` : 'MP N/A';
+        const track = [pin.trackType, pin.trackNumber].filter(Boolean).join(' ') || 'Track N/A';
+        const note = pin.notes ? ` | Notes: ${pin.notes}` : '';
+        return `${index + 1}. ${pin.category || 'Uncategorized'} | ${track} | ${mp} | ${coords}${note}`;
+      })
+      .join('\n');
+
+    const subject = `Sidekick Pin Drops (${filteredPins.length})`;
+    const body = `Pin Drop List\nGenerated: ${timestamp}\nFilter: ${selectedCategory}\n\n${listText}`;
+    const mailtoUrl = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+    try {
+      const canOpenMail = await Linking.canOpenURL(mailtoUrl);
+      if (canOpenMail) {
+        await Linking.openURL(mailtoUrl);
+        return;
+      }
+
+      await Share.share({
+        title: subject,
+        message: `${subject}\n\n${body}`,
+      });
+    } catch (error) {
+      Alert.alert('Share Failed', 'Unable to open email or share options on this device.');
+    }
+  };
+
+  const handleEditPin = (pin) => {
+    navigation.navigate('PinForm', { pin });
   };
 
   const getCategoryIcon = (category) => {
@@ -97,7 +147,7 @@ const PinsScreen = () => {
   };
 
   const renderPin = ({ item }) => (
-    <View style={styles.pinCard}>
+    <TouchableOpacity style={styles.pinCard} onPress={() => handleEditPin(item)} activeOpacity={0.9}>
       <View style={styles.pinHeader}>
         <View style={styles.categoryBadge}>
           <MaterialCommunityIcons 
@@ -109,9 +159,14 @@ const PinsScreen = () => {
             {item.category}
           </Text>
         </View>
-        <TouchableOpacity onPress={() => handleDeletePin(item.id)}>
-          <MaterialCommunityIcons name="delete" size={24} color={theme.colors.error} />
-        </TouchableOpacity>
+        <View style={styles.pinActions}>
+          <TouchableOpacity onPress={() => handleEditPin(item)}>
+            <MaterialCommunityIcons name="pencil" size={20} color={theme.colors.accent} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDeletePin(item.id)}>
+            <MaterialCommunityIcons name="delete" size={24} color={theme.colors.error} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {item.photoUri && (
@@ -162,7 +217,7 @@ const PinsScreen = () => {
           </View>
         )}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   const renderEmptyState = () => (
@@ -181,9 +236,14 @@ const PinsScreen = () => {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Pin Drops ({filteredPins.length})</Text>
-        <TouchableOpacity style={styles.addButton} onPress={handleDropNewPin}>
-          <MaterialCommunityIcons name="plus" size={24} color={theme.colors.textPrimary} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity style={styles.emailButton} onPress={handleEmailPinList}>
+            <MaterialCommunityIcons name="email-outline" size={20} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.addButton} onPress={handleDropNewPin}>
+            <MaterialCommunityIcons name="plus" size={24} color={theme.colors.textPrimary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView 
@@ -250,6 +310,21 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: theme.colors.textPrimary,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  emailButton: {
+    backgroundColor: theme.colors.cardBackground,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
   addButton: {
     backgroundColor: theme.colors.accent,
     width: 44,
@@ -302,6 +377,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: theme.spacing.sm,
+  },
+  pinActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   categoryBadge: {
     flexDirection: 'row',

@@ -193,7 +193,7 @@ export const MAP_STYLES = [
   },
 ];
 
-export const DEFAULT_MAP_STYLE_ID = 'dark_gray_labels';
+export const DEFAULT_MAP_STYLE_ID = 'imagery_labels';
 
 export const getMapStyleById = (id) => {
   const match = MAP_STYLES.find((style) => style.id === id);

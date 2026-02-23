@@ -13,6 +13,15 @@ class SocketService {
     this.listeners = new Map();
   }
 
+  normalizeUser(user) {
+    if (!user) return null;
+    return {
+      token: user.token,
+      userId: user.User_ID ?? user.user_id ?? user.userId ?? null,
+      agencyId: user.Agency_ID ?? user.agency_id ?? user.agencyId ?? null
+    };
+  }
+
   async connect() {
     try {
       if (this.socket && this.connected) {
@@ -20,16 +29,23 @@ class SocketService {
       }
 
       // Get user token
-      const user = await databaseService.getUser();
+      const rawUser = await databaseService.getUser();
+      const user = this.normalizeUser(rawUser);
       if (!user || !user.token) {
         throw new Error('User not authenticated');
       }
 
+      const socketUrl = (CONFIG.SOCKET.URL || '').replace(/\/+$/, '');
+      console.log('Socket connecting to:', socketUrl);
+
       // Create socket connection
-      this.socket = io(CONFIG.SOCKET.URL, {
+      this.socket = io(socketUrl, {
         auth: {
           token: user.token
         },
+        path: '/socket.io',
+        timeout: 10000,
+        forceNew: true,
         reconnection: true,
         reconnectionAttempts: this.maxReconnectAttempts,
         reconnectionDelay: CONFIG.SOCKET.RECONNECTION_DELAY,
@@ -48,10 +64,14 @@ class SocketService {
           this.reconnectAttempts = 0;
           
           // Join user-specific room
-          this.socket.emit('join-user', user.user_id);
+          if (user.userId) {
+            this.socket.emit('join-user', user.userId);
+          }
           
           // Join agency room
-          this.socket.emit('join-agency', user.agency_id);
+          if (user.agencyId) {
+            this.socket.emit('join-agency', user.agencyId);
+          }
           
           resolve(this.socket);
         });
@@ -76,8 +96,6 @@ class SocketService {
               console.error('Token refresh during socket connect failed:', refreshErr);
             }
           }
-
-          reject(error);
         });
 
         // Timeout after 10 seconds

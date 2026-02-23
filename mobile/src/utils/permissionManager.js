@@ -157,7 +157,7 @@ class PermissionManager {
 
       const { status: currentStatus } = await Notifications.getPermissionsAsync();
       
-      if (currentStatus.granted) {
+      if (currentStatus === 'granted') {
         this.permissions.notifications.granted = true;
         return true;
       }
@@ -195,7 +195,7 @@ class PermissionManager {
     try {
       const { status: currentStatus } = await ImagePicker.getCameraPermissionsAsync();
       
-      if (currentStatus.granted) {
+      if (currentStatus === 'granted') {
         this.permissions.camera.granted = true;
         return true;
       }
@@ -233,7 +233,7 @@ class PermissionManager {
     try {
       const { status: currentStatus } = await ImagePicker.getMediaLibraryPermissionsAsync();
       
-      if (currentStatus.granted) {
+      if (currentStatus === 'granted') {
         this.permissions.photos.granted = true;
         return true;
       }

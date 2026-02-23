@@ -1,9 +1,11 @@
 const BaseModel = require('./BaseModel');
-const { sql } = require('../config/database');
+const { sql, getConnectionWithRecovery } = require('../config/database');
 
 class Authority extends BaseModel {
   constructor() {
     super('Authorities');
+    this.authorityTypeCache = null;
+    this.authorityTypeCacheTtlMs = 5 * 60 * 1000;
   }
 
   async create(authorityData) {
@@ -19,11 +21,12 @@ class Authority extends BaseModel {
       employeeContactDisplay = null,
       expirationTime = null
     } = authorityData;
+    const normalizedAuthorityType = await this.normalizeAuthorityType(authorityType);
 
     // Use stored procedure for authority creation with overlap check
     const result = await this.executeStoredProcedure('sp_CreateAuthority', {
       userID: userId,
-      authorityType,
+      authorityType: normalizedAuthorityType,
       subdivisionID: subdivisionId,
       beginMP,
       endMP,
@@ -49,6 +52,71 @@ class Authority extends BaseModel {
         JSON.parse(result.output.overlapDetails) : [],
       authority
     };
+  }
+
+  async getAllowedAuthorityTypes() {
+    const now = Date.now();
+    if (this.authorityTypeCache && (now - this.authorityTypeCache.fetchedAt) < this.authorityTypeCacheTtlMs) {
+      return this.authorityTypeCache.values;
+    }
+
+    try {
+      const pool = await getConnectionWithRecovery();
+      const result = await pool.request().query(`
+        SELECT cc.definition AS Definition
+        FROM sys.check_constraints cc
+        INNER JOIN sys.columns c
+          ON cc.parent_object_id = c.object_id
+          AND cc.parent_column_id = c.column_id
+        WHERE cc.parent_object_id = OBJECT_ID('Authorities')
+          AND c.name = 'Authority_Type'
+      `);
+
+      const definition = result.recordset[0]?.Definition || '';
+      const values = [];
+      const regex = /'([^']+)'/g;
+      let match = regex.exec(definition);
+      while (match) {
+        values.push(match[1]);
+        match = regex.exec(definition);
+      }
+
+      const deduped = [...new Set(values)];
+      this.authorityTypeCache = {
+        values: deduped,
+        fetchedAt: now,
+      };
+      return deduped;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  async normalizeAuthorityType(inputType) {
+    if (!inputType) return inputType;
+
+    const allowed = await this.getAllowedAuthorityTypes();
+    if (!allowed.length) return inputType;
+
+    const contains = (candidate) => allowed.some((value) => String(value).toLowerCase() === String(candidate).toLowerCase());
+
+    if (contains(inputType)) {
+      return allowed.find((value) => String(value).toLowerCase() === String(inputType).toLowerCase()) || inputType;
+    }
+
+    const canonicalCandidates = {
+      Track_Authority: ['Track_Authority', 'Track Authority', 'Track_Authorit', 'Track'],
+      Lone_Worker_Authority: ['Lone_Worker_Authority', 'Lone Worker Authority', 'Lone_Worker', 'Lone Worker', 'Lone_Worker_Authorit']
+    };
+
+    const candidates = canonicalCandidates[inputType] || [inputType];
+    for (const candidate of candidates) {
+      if (contains(candidate)) {
+        return allowed.find((value) => String(value).toLowerCase() === String(candidate).toLowerCase()) || candidate;
+      }
+    }
+
+    return inputType;
   }
 
   async getActiveAuthorities(subdivisionId = null, trackType = null, trackNumber = null) {

@@ -9,12 +9,13 @@ import {
   Image,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
-import { Picker } from '@react-native-picker/picker';
+import DropDownPicker from 'react-native-dropdown-picker';
 import { 
   COLORS, 
   SPACING, 
@@ -24,19 +25,67 @@ import {
   SHADOWS 
 } from '../../constants/theme';
 import { getCurrentTrack, interpolateMilepost } from '../../utils/trackGeometry';
-import { addPin } from '../../store/slices/pinSlice';
+import { addPin, updatePin } from '../../store/slices/pinSlice';
 import { CONFIG } from '../../constants/config';
 import apiService from '../../services/api/ApiService';
 import permissionManager from '../../utils/permissionManager';
 import logger from '../../utils/logger';
 
+const getAgencyIdFromUser = (user) => {
+  if (!user) return null;
+
+  const rawAgencyId =
+    user.Agency_ID ??
+    user.agency_id ??
+    user.agencyId ??
+    user.AgencyId ??
+    user.agency?.Agency_ID ??
+    user.agency?.agency_id ??
+    user.agency?.agencyId ??
+    user.Agency?.Agency_ID ??
+    user.Agency?.agency_id ??
+    user.Agency?.agencyId;
+
+  const agencyId = Number(rawAgencyId);
+  return Number.isFinite(agencyId) ? agencyId : null;
+};
+
+const getImagePickerMediaType = () => {
+  if (ImagePicker.MediaTypeOptions?.Images) {
+    return ImagePicker.MediaTypeOptions.Images;
+  }
+  if (ImagePicker.MediaType?.Images) {
+    return ImagePicker.MediaType.Images;
+  }
+  return ['images'];
+};
+
+const normalizePhotoAsset = (asset) => {
+  if (!asset?.uri) return null;
+
+  // Keep a stable preview URI for iOS while preserving the local file URI for upload.
+  const previewUri = asset.base64
+    ? `data:image/jpeg;base64,${asset.base64}`
+    : asset.uri;
+
+  return {
+    uri: previewUri,
+    uploadUri: asset.uri,
+    mimeType: asset.mimeType || 'image/jpeg',
+    fileName: asset.fileName || `pin_${Date.now()}.jpg`,
+  };
+};
+
 const PinDropScreen = ({ navigation, route }) => {
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
   const { currentAuthority } = useSelector((state) => state.authority);
+  const editingPin = route.params?.pin || null;
+  const isEditing = Boolean(editingPin);
   
   const [pinCategories, setPinCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [notes, setNotes] = useState('');
   const [photo, setPhoto] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -52,32 +101,92 @@ const PinDropScreen = ({ navigation, route }) => {
     if (user?.token) {
       fetchPinCategories();
     }
-    getCurrentLocation();
+    if (!isEditing) {
+      getCurrentLocation();
+    }
   }, [user?.token]);
+
+  useEffect(() => {
+    if (!editingPin) {
+      return;
+    }
+
+    setSelectedCategory(
+      String(
+        editingPin.pinTypeId ||
+        editingPin.Pin_Type_ID ||
+        ''
+      )
+    );
+    setNotes(editingPin.notes || editingPin.Notes || '');
+
+    if (editingPin.photoUri || editingPin.Photo_URL) {
+      setPhoto({ uri: editingPin.photoUri || editingPin.Photo_URL });
+    }
+
+    const lat = editingPin.latitude ?? editingPin.Latitude;
+    const lng = editingPin.longitude ?? editingPin.Longitude;
+    if (lat != null && lng != null) {
+      setLocation({ latitude: Number(lat), longitude: Number(lng) });
+      setLoadingLocation(false);
+    }
+
+    const trackType = editingPin.trackType ?? editingPin.Track_Type;
+    const trackNumber = editingPin.trackNumber ?? editingPin.Track_Number;
+    if (trackType || trackNumber) {
+      setTrack({
+        type: trackType || null,
+        number: trackNumber || null,
+      });
+    }
+
+    const mp = editingPin.milepost ?? editingPin.MP;
+    if (mp != null && mp !== '') {
+      setMilepost(Number(mp));
+    }
+  }, [editingPin]);
 
   const fetchPinCategories = async () => {
     try {
-      logger.info('Pins', 'Fetching pin types for agency:', user.Agency_ID);
+      const agencyId = getAgencyIdFromUser(user);
+      if (!agencyId) {
+        logger.warn('Pins', 'No agency ID found on user payload; cannot fetch pin categories');
+        setPinCategories([]);
+        return;
+      }
+
+      logger.info('Pins', 'Fetching pin types for agency:', agencyId);
       const response = await apiService.api.get(
-        `/config/agencies/${user.Agency_ID}/pin-types`
+        `/config/agencies/${agencyId}/pin-types`
       );
       
       logger.info('Pins', 'Pin types API response:', response.data);
       
-      // Handle both direct array and nested data response
-      const data = response.data.data?.pinTypes || response.data.pinTypes || response.data || [];
+      // Handle multiple backend response shapes
+      const responseData = response?.data;
+      const data = Array.isArray(responseData?.data?.pinTypes)
+        ? responseData.data.pinTypes
+        : Array.isArray(responseData?.pinTypes)
+          ? responseData.pinTypes
+          : Array.isArray(responseData?.data)
+            ? responseData.data
+            : Array.isArray(responseData)
+              ? responseData
+              : [];
       
       logger.info('Pins', 'Extracted pin types data:', data);
       
       if (data.length > 0) {
         // Map to format expected by UI: combine category and subtype as display name
         const formattedData = data.map(pt => ({
-          Pin_Type_ID: pt.Pin_Type_ID,
-          Type_Name: `${pt.Pin_Category} - ${pt.Pin_Subtype}`,
-          Pin_Category: pt.Pin_Category,
-          Pin_Subtype: pt.Pin_Subtype,
-          Color: pt.Color
-        }));
+          Pin_Type_ID: pt.Pin_Type_ID ?? pt.pinTypeId ?? pt.pin_type_id,
+          Type_Name: pt.Type_Name || pt.typeName || `${pt.Pin_Category || pt.category || 'General'} - ${pt.Pin_Subtype || pt.subtype || 'General'}`,
+          Pin_Category: pt.Pin_Category ?? pt.category ?? 'General',
+          Pin_Subtype: pt.Pin_Subtype ?? pt.subtype ?? 'General',
+          Color: pt.Color ?? pt.color ?? '#FF7A00'
+        }))
+        .filter((pt) => Number.isFinite(Number(pt.Pin_Type_ID)));
+
         logger.info('Pins', 'Formatted pin categories:', formattedData);
         setPinCategories(formattedData);
       } else {
@@ -135,40 +244,58 @@ const PinDropScreen = ({ navigation, route }) => {
   };
 
   const takePhoto = async () => {
-    const granted = await permissionManager.requestCameraPermission();
-    if (!granted) {
-      Alert.alert('Permission Denied', 'Camera permission is required');
-      return;
-    }
+    try {
+      const granted = await permissionManager.requestCameraPermission();
+      if (!granted) {
+        Alert.alert('Permission Denied', 'Camera permission is required');
+        return;
+      }
 
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.8,
-    });
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: getImagePickerMediaType(),
+        allowsEditing: Platform.OS !== 'ios',
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: true,
+      });
 
-    if (!result.canceled) {
-      setPhoto(result.assets[0]);
+      if (!result.canceled && result.assets?.[0]) {
+        const normalized = normalizePhotoAsset(result.assets[0]);
+        if (normalized) {
+          setPhoto(normalized);
+        }
+      }
+    } catch (error) {
+      logger.error('Pins', 'Camera launch failed', error);
+      Alert.alert('Camera Error', 'Unable to open camera. Please try again.');
     }
   };
 
   const pickPhoto = async () => {
-    const granted = await permissionManager.requestPhotoLibraryPermission();
-    if (!granted) {
-      Alert.alert('Permission Denied', 'Photo library permission is required');
-      return;
-    }
+    try {
+      const granted = await permissionManager.requestPhotoLibraryPermission();
+      if (!granted) {
+        Alert.alert('Permission Denied', 'Photo library permission is required');
+        return;
+      }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.8,
-    });
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: getImagePickerMediaType(),
+        allowsEditing: Platform.OS !== 'ios',
+        aspect: [4, 3],
+        quality: 0.8,
+        base64: true,
+      });
 
-    if (!result.canceled) {
-      setPhoto(result.assets[0]);
+      if (!result.canceled && result.assets?.[0]) {
+        const normalized = normalizePhotoAsset(result.assets[0]);
+        if (normalized) {
+          setPhoto(normalized);
+        }
+      }
+    } catch (error) {
+      logger.error('Pins', 'Photo picker launch failed', error);
+      Alert.alert('Photo Library Error', 'Unable to open photo library. Please try again.');
     }
   };
 
@@ -183,12 +310,18 @@ const PinDropScreen = ({ navigation, route }) => {
       return;
     }
 
+    const agencyId = getAgencyIdFromUser(user);
+    if (!agencyId) {
+      Alert.alert('Error', 'Unable to determine your agency. Please log in again.');
+      return;
+    }
+
     try {
       setLoading(true);
 
       const pinData = {
         userId: user.User_ID,
-        agencyId: user.Agency_ID,
+        agencyId,
         authorityId: currentAuthority?.Authority_ID || null,
         pinTypeId: parseInt(selectedCategory),
         latitude: location.latitude,
@@ -197,7 +330,7 @@ const PinDropScreen = ({ navigation, route }) => {
         trackNumber: track?.number || null,
         mp: milepost || null,
         notes: notes || null,
-        photoUrl: photo?.uri || null,
+        photoUrl: photo?.uploadUri || photo?.uri || null,
         timestamp: timestamp,
       };
 
@@ -206,12 +339,15 @@ const PinDropScreen = ({ navigation, route }) => {
       logger.info('Pins', 'Available categories:', pinCategories);
 
       // Upload photo if exists
-      if (photo) {
+      const uploadSourceUri = photo?.uploadUri || photo?.uri;
+      const shouldUploadPhoto = Boolean(uploadSourceUri && String(uploadSourceUri).startsWith('file:'));
+
+      if (shouldUploadPhoto) {
         const formData = new FormData();
         formData.append('photo', {
-          uri: photo.uri,
-          type: 'image/jpeg',
-          name: `pin_${Date.now()}.jpg`,
+          uri: uploadSourceUri,
+          type: photo.mimeType || 'image/jpeg',
+          name: photo.fileName || `pin_${Date.now()}.jpg`,
         });
         
         // Add authorityId if available
@@ -229,12 +365,16 @@ const PinDropScreen = ({ navigation, route }) => {
       }
 
       // Save pin to backend
-      const savedPin = await apiService.createPin(pinData);
+      const pinId = editingPin?.id || editingPin?.Pin_ID;
+      const savedPin = isEditing
+        ? await apiService.updatePin(pinId, pinData)
+        : await apiService.createPin(pinData);
 
       // Add to Redux state with proper field mapping
       const pinToSave = savedPin.data || savedPin;
-      dispatch(addPin({
+      const mappedPin = {
         id: pinToSave.Pin_ID,
+        pinTypeId: pinToSave.Pin_Type_ID,
         category: selectedCategory ? pinCategories.find(c => c.Pin_Type_ID === parseInt(selectedCategory))?.Type_Name : 'Unknown',
         latitude: pinToSave.Latitude,
         longitude: pinToSave.Longitude,
@@ -245,11 +385,17 @@ const PinDropScreen = ({ navigation, route }) => {
         photoUri: pinToSave.Photo_URL,
         timestamp: pinToSave.Created_Date || timestamp,
         syncPending: false
-      }));
+      };
+
+      if (isEditing) {
+        dispatch(updatePin(mappedPin));
+      } else {
+        dispatch(addPin(mappedPin));
+      }
 
       Alert.alert(
-        'Pin Dropped',
-        'Pin has been saved successfully',
+        isEditing ? 'Pin Updated' : 'Pin Dropped',
+        isEditing ? 'Pin has been updated successfully' : 'Pin has been saved successfully',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error) {
@@ -257,8 +403,9 @@ const PinDropScreen = ({ navigation, route }) => {
       Alert.alert('Error', 'Failed to save pin. It will be synced when connection is restored.');
       
       // Save locally for offline sync with proper field mapping
-      dispatch(addPin({
+      const fallbackPin = {
         id: `temp_${Date.now()}`,
+        pinTypeId: selectedCategory ? parseInt(selectedCategory) : null,
         category: selectedCategory ? pinCategories.find(c => c.Pin_Type_ID === parseInt(selectedCategory))?.Type_Name : 'Unknown',
         latitude: location.latitude,
         longitude: location.longitude,
@@ -270,7 +417,13 @@ const PinDropScreen = ({ navigation, route }) => {
         timestamp: timestamp,
         syncPending: true,
         _pendingData: pinData // Keep original data for sync
-      }));
+      };
+
+      if (isEditing && editingPin?.id) {
+        dispatch(updatePin({ ...fallbackPin, id: editingPin.id }));
+      } else {
+        dispatch(addPin(fallbackPin));
+      }
       navigation.goBack();
     } finally {
       setLoading(false);
@@ -300,26 +453,31 @@ const PinDropScreen = ({ navigation, route }) => {
         {/* Category Selection */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Category *</Text>
-          <View style={styles.pickerContainer}>
-            <Picker
-              selectedValue={selectedCategory}
-              onValueChange={(value) => setSelectedCategory(value)}
-              style={styles.picker}
-              dropdownIconColor={COLORS.accent}
-              mode="dropdown"
-            >
-              <Picker.Item label="Select Category" value="" />
-              {(pinCategories || []).map((category) => (
-                <Picker.Item
-                  key={category.Pin_Type_ID}
-                  label={category.Type_Name}
-                  value={category.Pin_Type_ID.toString()}
-                />
-              ))}
-            </Picker>
-          </View>
+          <DropDownPicker
+            open={categoryOpen}
+            value={selectedCategory}
+            items={(pinCategories || []).map((category) => ({
+              label: category.Type_Name,
+              value: category.Pin_Type_ID.toString(),
+            }))}
+            setOpen={setCategoryOpen}
+            setValue={(callback) => {
+              const nextValue = callback(selectedCategory);
+              setSelectedCategory(nextValue);
+            }}
+            setItems={() => {}}
+            placeholder="Select Category"
+            style={styles.dropdown}
+            dropDownContainerStyle={styles.dropdownContainer}
+            textStyle={styles.dropdownText}
+            listMode="SCROLLVIEW"
+            zIndex={3000}
+            zIndexInverse={1000}
+          />
           {pinCategories.length === 0 && (
-            <Text style={styles.loadingText}>Loading categories...</Text>
+            <TouchableOpacity onPress={fetchPinCategories} style={styles.retryCategoriesButton}>
+              <Text style={styles.retryCategoriesText}>No categories available. Tap to retry.</Text>
+            </TouchableOpacity>
           )}
         </View>
 
@@ -418,7 +576,7 @@ const PinDropScreen = ({ navigation, route }) => {
           ) : (
             <>
               <Ionicons name="checkmark-circle" size={24} color={COLORS.primary} />
-              <Text style={styles.saveButtonText}>Drop Pin</Text>
+              <Text style={styles.saveButtonText}>{isEditing ? 'Update Pin' : 'Drop Pin'}</Text>
             </>
           )}
         </TouchableOpacity>
@@ -480,18 +638,26 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     marginBottom: SPACING.md,
   },
-  pickerContainer: {
+  dropdown: {
     backgroundColor: COLORS.surface,
-    borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: BORDER_RADIUS.sm,
-    overflow: 'hidden',
     minHeight: 50,
   },
-  picker: {
-    color: COLORS.text,
+  dropdownContainer: {
     backgroundColor: COLORS.surface,
-    height: 50,
+    borderColor: COLORS.border,
+  },
+  dropdownText: {
+    color: COLORS.text,
+  },
+  retryCategoriesButton: {
+    marginTop: SPACING.sm,
+  },
+  retryCategoriesText: {
+    color: COLORS.accent,
+    fontSize: FONT_SIZES.sm,
+    textDecorationLine: 'underline',
   },
   photoContainer: {
     minHeight: 200,

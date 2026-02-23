@@ -13,6 +13,8 @@ import logger from '../../utils/logger';
 import { globalGPSSmoother } from '../../utils/gpsSmoother';
 
 const GPS_TASK_NAME = 'herzog-gps-tracking';
+const GPS_BACKEND_MIN_SEND_INTERVAL_MS = 3000;
+const GPS_BACKEND_MIN_MOVE_METERS = 12;
 
 class GPSTrackingService {
   constructor() {
@@ -26,13 +28,70 @@ class GPSTrackingService {
     this.currentTrackInfo = null;
     this.sentAlerts = new Map(); // Track sent alerts to avoid duplicates
     this.gpsSmoother = globalGPSSmoother; // Use global GPS smoother instance
+    this.lastBackendSendAt = 0;
+    this.lastBackendSentPosition = null;
+  }
+
+  sanitizeNonNegative(value, fallback = 0) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return fallback;
+    return num;
+  }
+
+  sanitizeHeading(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return null;
+    if (num > 360) return num % 360;
+    return num;
+  }
+
+  calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+    const toRad = (deg) => (deg * Math.PI) / 180;
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  shouldSendBackendUpdate() {
+    if (!this.currentPosition) return false;
+    const now = Date.now();
+    const elapsedMs = now - this.lastBackendSendAt;
+    const lastPos = this.lastBackendSentPosition;
+
+    if (!lastPos) {
+      return true;
+    }
+
+    const movedMeters = this.calculateDistanceMeters(
+      lastPos.latitude,
+      lastPos.longitude,
+      this.currentPosition.latitude,
+      this.currentPosition.longitude
+    );
+
+    if (elapsedMs >= GPS_BACKEND_MIN_SEND_INTERVAL_MS) {
+      return true;
+    }
+
+    return movedMeters >= GPS_BACKEND_MIN_MOVE_METERS;
   }
 
   async init() {
     try {
+      // Foreground location is required. Background is optional on iOS/Expo Go.
+      const needsBackgroundPermission =
+        CONFIG.GPS.BACKGROUND_TRACKING &&
+        Platform.OS === 'android';
+
       // Use permission manager for better UX with explanations
       const granted = await permissionManager.requestLocationPermission(
-        CONFIG.GPS.BACKGROUND_TRACKING // Request background if needed
+        needsBackgroundPermission
       );
       
       if (!granted) {
@@ -69,18 +128,19 @@ class GPSTrackingService {
     }
   }
 
-  async startTracking(authority) {
+  async startTracking(authority = null) {
     try {
       if (this.isTracking) {
         await this.stopTracking();
       }
 
-      this.currentAuthority = authority;
+      this.currentAuthority = authority || null;
       this.sentAlerts.clear();
       
       // Reset GPS smoother for new tracking session
       this.gpsSmoother.reset();
-      logger.info('GPS', 'Started new tracking session', { authorityId: authority.authority_id || authority.Authority_ID });
+      const authorityId = this.currentAuthority?.authority_id || this.currentAuthority?.Authority_ID || this.currentAuthority?.id || null;
+      logger.info('GPS', 'Started new tracking session', { authorityId, mode: authorityId ? 'authority' : 'general' });
 
       // Start foreground tracking with higher accuracy
       this.watchId = await Location.watchPositionAsync(
@@ -113,7 +173,7 @@ class GPSTrackingService {
       
       store.dispatch(startTracking());
 
-      logger.info('GPS', 'GPS tracking started', { authorityId: authority.authority_id });
+      logger.info('GPS', 'GPS tracking started', { authorityId });
       
       return true;
     } catch (error) {
@@ -145,6 +205,8 @@ class GPSTrackingService {
       this.currentAuthority = null;
       this.currentMilepost = null;
       this.currentTrackInfo = null;
+      this.lastBackendSendAt = 0;
+      this.lastBackendSentPosition = null;
 
       store.dispatch(stopTracking());
 
@@ -162,7 +224,7 @@ class GPSTrackingService {
       const { coords, timestamp } = location;
       const user = await databaseService.getUser();
       
-      if (!user || !this.currentAuthority) {
+      if (!user) {
         return;
       }
 
@@ -170,9 +232,9 @@ class GPSTrackingService {
       const smoothedCoords = {
         latitude: smoothedLocation.latitude,
         longitude: smoothedLocation.longitude,
-        accuracy: smoothedLocation.accuracy,
-        speed: smoothedLocation.speed,
-        heading: smoothedLocation.heading,
+        accuracy: this.sanitizeNonNegative(smoothedLocation.accuracy, 0),
+        speed: this.sanitizeNonNegative(smoothedLocation.speed, 0),
+        heading: this.sanitizeHeading(smoothedLocation.heading),
         altitude: smoothedLocation.altitude,
       };
 
@@ -182,11 +244,14 @@ class GPSTrackingService {
         logger.gps('GPS quality', stats);
       }
 
-      // Get current track information
-      this.currentTrackInfo = await this.getCurrentTrackInfo(smoothedCoords);
-      
-      // Calculate current milepost based on track geometry
-      this.currentMilepost = await this.calculateCurrentMilepost(smoothedCoords);
+      // Authority-specific computations only when an authority is active.
+      if (this.currentAuthority) {
+        this.currentTrackInfo = await this.getCurrentTrackInfo(smoothedCoords);
+        this.currentMilepost = await this.calculateCurrentMilepost(smoothedCoords);
+      } else {
+        this.currentTrackInfo = null;
+        this.currentMilepost = null;
+      }
       
       this.currentPosition = {
         latitude: smoothedCoords.latitude,
@@ -203,18 +268,20 @@ class GPSTrackingService {
         sampleSize: smoothedLocation.sampleSize || 1,
       };
 
-      // Save to local database
-      await databaseService.saveGPSLog({
-        User_ID: user.user_id,
-        Authority_ID: this.currentAuthority.authority_id || this.currentAuthority.id,
-        Latitude: smoothedCoords.latitude,
-        Longitude: smoothedCoords.longitude,
-        Speed: smoothedCoords.speed,
-        Heading: smoothedCoords.heading,
-        Accuracy: smoothedCoords.accuracy,
-        Milepost: this.currentMilepost,
-        Is_Offline: isBackground,
-      });
+      // Save authority-linked logs only when authority is active.
+      if (this.currentAuthority) {
+        await databaseService.saveGPSLog({
+          User_ID: user.user_id,
+          Authority_ID: this.currentAuthority.authority_id || this.currentAuthority.id,
+          Latitude: smoothedCoords.latitude,
+          Longitude: smoothedCoords.longitude,
+          Speed: smoothedCoords.speed,
+          Heading: smoothedCoords.heading,
+          Accuracy: smoothedCoords.accuracy,
+          Milepost: this.currentMilepost,
+          Is_Offline: isBackground,
+        });
+      }
 
       // Update Redux state
       store.dispatch(updatePosition(this.currentPosition));
@@ -226,15 +293,17 @@ class GPSTrackingService {
         speed: smoothedCoords.speed,
       }));
 
-      // Check boundary alerts
-      await this.checkBoundaryAlerts();
-      
-      // Check proximity to other workers
-      await this.checkProximityAlerts();
+      if (this.currentAuthority) {
+        // Check boundary alerts
+        await this.checkBoundaryAlerts();
+        
+        // Check proximity to other workers
+        await this.checkProximityAlerts();
 
-      // Send location update to server via socket
-      if (socketService.isConnected()) {
-        await this.sendLocationUpdate();
+        // Send authority-linked location update to backend/socket
+        if (socketService.isConnected()) {
+          await this.sendLocationUpdate();
+        }
       }
 
       // Sync if needed
@@ -546,6 +615,7 @@ class GPSTrackingService {
 
   async sendLocationUpdate() {
     if (!this.currentPosition || !this.currentAuthority) return;
+    if (!this.shouldSendBackendUpdate()) return;
 
     const user = await databaseService.getUser();
     
@@ -554,15 +624,20 @@ class GPSTrackingService {
       authorityId: this.currentAuthority.Authority_ID || this.currentAuthority.authority_id || this.currentAuthority.id,
       latitude: this.currentPosition.latitude,
       longitude: this.currentPosition.longitude,
-      speed: this.currentPosition.speed || 0,
-      heading: this.currentPosition.heading || 0,
-      accuracy: this.currentPosition.accuracy || 0,
+      speed: this.sanitizeNonNegative(this.currentPosition.speed, 0),
+      heading: this.sanitizeHeading(this.currentPosition.heading),
+      accuracy: this.sanitizeNonNegative(this.currentPosition.accuracy, 0),
       isOffline: false
     };
 
     // Send to backend API for alert processing
     try {
       await apiService.updateGPSPosition(gpsData);
+      this.lastBackendSendAt = Date.now();
+      this.lastBackendSentPosition = {
+        latitude: this.currentPosition.latitude,
+        longitude: this.currentPosition.longitude,
+      };
       logger.gps('GPS position sent to backend for alert processing');
     } catch (error) {
       logger.error('GPS', 'Failed to send GPS to backend', error);

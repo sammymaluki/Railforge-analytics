@@ -10,6 +10,11 @@ class AuthorityController {
     try {
       const user = req.user;
       const authorityData = req.body;
+
+      // Normalize optional expiration to prevent invalid null/empty values reaching the model.
+      if (authorityData.expirationTime === null || authorityData.expirationTime === '') {
+        delete authorityData.expirationTime;
+      }
       
       // Add user ID to authority data
       authorityData.userId = user.User_ID;
@@ -129,9 +134,19 @@ class AuthorityController {
       });
     } catch (error) {
       logger.error('Create authority error:', error);
+
+      const errorMessage = String(error?.message || '');
+      if (error?.number === 547 && errorMessage.includes('Authority_Type')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid authority type for current database configuration'
+        });
+      }
+
       res.status(500).json({
         success: false,
-        error: 'Failed to create authority'
+        error: 'Failed to create authority',
+        ...(process.env.NODE_ENV === 'development' && { details: errorMessage })
       });
     }
   }

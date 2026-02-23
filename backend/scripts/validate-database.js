@@ -1,12 +1,13 @@
-const { connectToDatabase, closeConnection, sql } = require('../src/config/database');
-const { logger } = require('../config/logger');
+require('dotenv').config();
+const { connectToDatabase, closeConnection, getConnection, sql } = require('../src/config/database');
+const { logger } = require('../src/config/logger');
 
 const validateDatabase = async () => {
   console.log('🔍 Validating database structure...');
   
   try {
     await connectToDatabase();
-    const pool = await sql.connect();
+    const pool = getConnection();
     
     // Check all required tables exist
     const requiredTables = [
@@ -62,7 +63,7 @@ const validateDatabase = async () => {
     
     // Check functions and views
     console.log('\n🔧 Checking functions and views:');
-    const funcQuery = `SELECT 1 FROM sys.objects WHERE name = 'fn_CheckAuthorityOverlap' AND type = 'FN'`;
+    const funcQuery = `SELECT 1 FROM sys.objects WHERE name = 'fn_CheckAuthorityOverlap' AND type IN ('FN', 'IF', 'TF')`;
     const funcResult = await pool.request().query(funcQuery);
     
     if (funcResult.recordset.length > 0) {

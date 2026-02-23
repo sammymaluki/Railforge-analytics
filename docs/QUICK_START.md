@@ -107,6 +107,13 @@ npm run db:migrate
 # Run seed data
 npm run db:seed
 
+# Import full Metro Link Excel data (tracks + mileposts)
+# If the file is in swl/seeds:
+node backend/scripts/import-metrolink-data-simple.js --excel "swl/seeds/Metro Link map Data.xlsx" --target-agency-id 1
+
+# If the file is in backend/sql/seeds:
+node backend/scripts/import-metrolink-data-simple.js --excel "backend/sql/seeds/Metro Link map Data.xlsx" --target-agency-id 1
+
 # Validate the database
 node scripts/validate-database.js
 

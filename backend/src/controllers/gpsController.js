@@ -2,14 +2,68 @@ const GPSService = require('../services/gpsService');
 const { logger } = require('../config/logger');
 const { broadcastCurrentLocation } = require('../config/socket');
 
+const GPS_MIN_PROCESS_INTERVAL_MS = 2500;
+const GPS_MIN_PROCESS_MOVE_METERS = 10;
+const userGpsProcessState = new Map();
+
+const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
 class GPSController {
   async updatePosition(req, res) {
     try {
       const user = req.user;
       const gpsData = req.body;
+
+      const latitude = Number(gpsData.latitude);
+      const longitude = Number(gpsData.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid GPS coordinates',
+        });
+      }
+      gpsData.latitude = latitude;
+      gpsData.longitude = longitude;
       
       // Add user ID to GPS data
       gpsData.userId = user.User_ID;
+
+      const now = Date.now();
+      const last = userGpsProcessState.get(user.User_ID);
+      if (last) {
+        const elapsed = now - last.timestamp;
+        const movedMeters = calculateDistanceMeters(
+          last.latitude,
+          last.longitude,
+          gpsData.latitude,
+          gpsData.longitude
+        );
+
+        if (elapsed < GPS_MIN_PROCESS_INTERVAL_MS && movedMeters < GPS_MIN_PROCESS_MOVE_METERS) {
+          return res.json({
+            success: true,
+            message: 'GPS update throttled',
+            data: { logged: false, throttled: true },
+          });
+        }
+      }
+
+      userGpsProcessState.set(user.User_ID, {
+        latitude: gpsData.latitude,
+        longitude: gpsData.longitude,
+        timestamp: now,
+      });
       
       // Process GPS update
       const result = await GPSService.processGPSUpdate(gpsData);

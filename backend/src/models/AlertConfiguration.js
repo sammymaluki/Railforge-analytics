@@ -52,7 +52,11 @@ class AlertConfiguration extends BaseModel {
       'Message_Template',
       'Sound_File',
       'Vibration_Pattern',
-      'Is_Active'
+      'Is_Active',
+      'Time_Minutes',
+      'Description',
+      'Alert_Level',
+      'Config_Type'
     ];
 
     const updates = [];
@@ -90,18 +94,20 @@ class AlertConfiguration extends BaseModel {
       distanceMiles,
       messageTemplate = null,
       soundFile = null,
-      vibrationPattern = null
+      vibrationPattern = null,
+      timeMinutes = null,
+      description = null
     } = configData;
 
     const query = `
       INSERT INTO Alert_Configurations (
         Agency_ID, Config_Type, Alert_Level, Distance_Miles,
-        Message_Template, Sound_File, Vibration_Pattern, Is_Active
+        Message_Template, Sound_File, Vibration_Pattern, Is_Active, Time_Minutes, Description
       )
       OUTPUT INSERTED.*
       VALUES (
         @agencyId, @configType, @alertLevel, @distanceMiles,
-        @messageTemplate, @soundFile, @vibrationPattern, 1
+        @messageTemplate, @soundFile, @vibrationPattern, 1, @timeMinutes, @description
       )
     `;
 
@@ -112,7 +118,9 @@ class AlertConfiguration extends BaseModel {
       distanceMiles,
       messageTemplate,
       soundFile,
-      vibrationPattern
+      vibrationPattern,
+      timeMinutes,
+      description
     });
 
     return result.recordset[0];

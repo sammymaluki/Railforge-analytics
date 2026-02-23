@@ -24,10 +24,10 @@ class GPSSmoother {
       const newPoint = {
         latitude: rawLocation.coords.latitude,
         longitude: rawLocation.coords.longitude,
-        altitude: rawLocation.coords.altitude || 0,
-        accuracy: rawLocation.coords.accuracy || 999,
-        speed: rawLocation.coords.speed || 0,
-        heading: rawLocation.coords.heading || 0,
+        altitude: this.normalizeNumber(rawLocation.coords.altitude, 0),
+        accuracy: this.normalizeNonNegative(rawLocation.coords.accuracy, 999),
+        speed: this.normalizeNonNegative(rawLocation.coords.speed, 0),
+        heading: this.normalizeHeading(rawLocation.coords.heading),
         timestamp: rawLocation.timestamp || now,
       };
 
@@ -83,6 +83,24 @@ class GPSSmoother {
       logger.error('GPS', 'Smoothing failed', error);
       return rawLocation;
     }
+  }
+
+  normalizeNumber(value, fallback = 0) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+  }
+
+  normalizeNonNegative(value, fallback = 0) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return fallback;
+    return num;
+  }
+
+  normalizeHeading(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return null;
+    if (num > 360) return num % 360;
+    return num;
   }
 
   /**

@@ -205,6 +205,16 @@ const AppNavigator = () => {
       socketService.connect().catch(error => {
         logger.error('Socket', 'Failed to connect to server', error);
       });
+
+      const reconnectInterval = setInterval(() => {
+        if (!socketService.isConnected()) {
+          socketService.connect().catch((error) => {
+            logger.warn('Socket', 'Reconnect attempt failed', error);
+          });
+        }
+      }, 10000);
+
+      return () => clearInterval(reconnectInterval);
     } else {
       // Disconnect socket when user logs out
       socketService.disconnect();

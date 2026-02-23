@@ -112,6 +112,35 @@ class ApiService {
     );
   }
 
+  // Helper: delay for backoff
+  delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Generic retry wrapper for transient network errors and 5xx responses
+  async requestWithRetry(fn, attempts = 3, baseDelay = 1000) {
+    let lastError;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err;
+        const shouldRetry =
+          err.code === 'ECONNABORTED' ||
+          err.code === 'ECONNRESET' ||
+          err.code === 'ERR_NETWORK' ||
+          err.message?.includes('Network Error') ||
+          err.message?.includes('ECONNRESET') ||
+          (err.response && err.response.status >= 500);
+        if (!shouldRetry) throw err;
+        const delayMs = baseDelay * Math.pow(2, i);
+        console.warn(`Request attempt ${i + 1} failed, retrying in ${delayMs}ms`);
+        await this.delay(delayMs);
+      }
+    }
+    throw lastError;
+  }
+
   async refreshToken() {
     try {
       const response = await this.api.post('/auth/refresh-token');
@@ -145,13 +174,29 @@ class ApiService {
   }
 
   // Auth endpoints
+  async get(url, config = {}) {
+    return this.api.get(url, config);
+  }
+
+  async post(url, data = {}, config = {}) {
+    return this.api.post(url, data, config);
+  }
+
+  async put(url, data = {}, config = {}) {
+    return this.api.put(url, data, config);
+  }
+
+  async delete(url, config = {}) {
+    return this.api.delete(url, config);
+  }
+
   async login(username, password) {
     try {
       console.log('🔐 Attempting login to:', this.api.defaults.baseURL + '/auth/login');
       console.log('🌐 Full URL:', `${this.api.defaults.baseURL}/auth/login`);
-      const response = await this.api.post('/auth/login', { username, password });
+      const result = await this.requestWithRetry(() => this.api.post('/auth/login', { username, password }), 3, 1000);
       console.log('✅ Login successful');
-      return response.data;
+      return result.data;
     } catch (error) {
       console.log('❌ Login failed:', error.message);
       if (error.code === 'ECONNABORTED') {
@@ -402,8 +447,21 @@ class ApiService {
   // Map layers
   async getMapLayers(params = {}) {
     try {
-      const response = await this.api.get('/map/layers', { params });
+      const response = await this.requestWithRetry(
+        () => this.api.get('/map/layers', { params }),
+        4,
+        800
+      );
       return response.data?.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async updatePin(pinId, pinData) {
+    try {
+      const response = await this.api.put(`/pins/${pinId}`, pinData);
+      return response.data;
     } catch (error) {
       throw this.handleError(error);
     }
@@ -411,7 +469,11 @@ class ApiService {
 
   async getMapLayerData(layerId, params = {}) {
     try {
-      const response = await this.api.get(`/map/layers/${encodeURI(layerId)}`, { params });
+      const response = await this.requestWithRetry(
+        () => this.api.get(`/map/layers/${encodeURI(layerId)}`, { params }),
+        4,
+        800
+      );
       return response.data?.data;
     } catch (error) {
       throw this.handleError(error);
@@ -420,7 +482,11 @@ class ApiService {
 
   async searchMapLayers(params = {}) {
     try {
-      const response = await this.api.get('/map/search', { params });
+      const response = await this.requestWithRetry(
+        () => this.api.get('/map/search', { params }),
+        4,
+        800
+      );
       return response.data?.data;
     } catch (error) {
       throw this.handleError(error);

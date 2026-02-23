@@ -2,7 +2,53 @@ const Agency = require('../models/Agency');
 const User = require('../models/User');
 // Removed unused model imports (they are used via DB seeding/helpers when needed)
 const { logger } = require('../config/logger');
-const { getConnection, sql } = require('../config/database');
+const { getConnection, getConnectionWithRecovery, sql } = require('../config/database');
+
+const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_DB_CODES.has(error.code)) return true;
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('connection lost') ||
+    message.includes('econnreset') ||
+    message.includes('failed to connect') ||
+    message.includes('timeout') ||
+    message.includes('aborted')
+  );
+};
+
+const queryWithRetry = async (requestFactory, query, context, maxRetries = 5) => {
+  let lastError;
+  let forceReconnect = false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const pool = await getConnectionWithRecovery({ forceReconnect });
+      const request = requestFactory(pool);
+      forceReconnect = false;
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      forceReconnect = true;
+      const delay = 200 * (2 ** (attempt - 1));
+      logger.warn(`Agency query attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms`, {
+        context,
+        error: error.message,
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+};
 
 class AgencyController {
   async getAllAgencies(req, res) {
@@ -319,20 +365,168 @@ class AgencyController {
   async getAgencySubdivisions(req, res) {
     try {
       const { agencyId } = req.params;
-      
-      const pool = await getConnection();
-      const result = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .query(`
+
+      let result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('agencyId', sql.Int, agencyId),
+        `
           SELECT 
             Subdivision_ID,
             Subdivision_Code,
             Subdivision_Name,
             Is_Active
           FROM Subdivisions
-          WHERE Agency_ID = @agencyId AND Is_Active = 1
+          WHERE Agency_ID = @agencyId
+            AND (Is_Active = 1 OR Is_Active IS NULL)
           ORDER BY Subdivision_Code
-        `);
+        `,
+        'getAgencySubdivisions.list'
+      );
+
+      // Dev bootstrap: if an agency has no subdivisions or no track data,
+      // create starter rows so local mobile flows can proceed.
+      let shouldBootstrap = false;
+      if (process.env.NODE_ENV !== 'production') {
+        if (result.recordset.length === 0) {
+          shouldBootstrap = true;
+        } else {
+          const trackCountResult = await queryWithRetry(
+            (pool) => pool.request()
+              .input('agencyId', sql.Int, agencyId),
+            `
+              SELECT COUNT(*) AS Count
+              FROM Tracks t
+              INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
+              WHERE s.Agency_ID = @agencyId
+            `,
+            'getAgencySubdivisions.trackCount'
+          );
+
+          const trackCount = trackCountResult.recordset[0]?.Count || 0;
+          shouldBootstrap = trackCount < 10;
+        }
+      }
+
+      if (shouldBootstrap) {
+        const starterSubdivisions = [
+          { code: 'MAIN', name: 'Main Subdivision' },
+          { code: 'NORTH', name: 'North Subdivision' },
+        ];
+
+        for (const sub of starterSubdivisions) {
+          await queryWithRetry(
+            (pool) => pool.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('code', sql.NVarChar, sub.code)
+              .input('name', sql.NVarChar, sub.name),
+            `
+              IF NOT EXISTS (
+                SELECT 1
+                FROM Subdivisions
+                WHERE Agency_ID = @agencyId
+                  AND Subdivision_Code = @code
+              )
+              BEGIN
+                INSERT INTO Subdivisions (Agency_ID, Subdivision_Code, Subdivision_Name, Region, Is_Active)
+                VALUES (@agencyId, @code, @name, 'Default', 1)
+              END
+            `,
+            `getAgencySubdivisions.bootstrap.insertSubdivision.${sub.code}`
+          );
+
+          const subRow = await queryWithRetry(
+            (pool) => pool.request()
+              .input('agencyId', sql.Int, agencyId)
+              .input('code', sql.NVarChar, sub.code),
+            `
+              SELECT TOP 1 Subdivision_ID
+              FROM Subdivisions
+              WHERE Agency_ID = @agencyId
+                AND Subdivision_Code = @code
+            `,
+            `getAgencySubdivisions.bootstrap.findSubdivision.${sub.code}`
+          );
+
+          const subdivisionId = subRow.recordset[0]?.Subdivision_ID;
+          if (!subdivisionId) {
+            continue;
+          }
+
+          // Seed starter track assets for map-layer counts in local/dev environments.
+          await queryWithRetry(
+            (pool) => pool.request()
+              .input('subdivisionId', sql.Int, subdivisionId),
+            `
+              IF NOT EXISTS (
+                SELECT 1
+                FROM Tracks
+                WHERE Subdivision_ID = @subdivisionId
+              )
+              BEGIN
+                INSERT INTO Tracks (
+                  Subdivision_ID, LS, Track_Type, Track_Number, BMP, EMP,
+                  Asset_Name, Asset_Type, Asset_SubType, Asset_Status, Latitude, Longitude, Department
+                )
+                VALUES
+                  (@subdivisionId, 'LS-1', 'Main', '1', 0.00, 5.00, 'Signal A', 'Signal', 'Wayside', 'ACTIVE', 34.052235, -118.243683, 'Engineering'),
+                  (@subdivisionId, 'LS-2', 'Main', '2', 0.00, 5.00, 'Road Crossing A', 'Crossing', 'Road Crossing', 'ACTIVE', 34.054235, -118.241683, 'Engineering'),
+                  (@subdivisionId, 'LS-3', 'Main', '1', 5.00, 10.00, 'Rail Crossing A', 'Crossing', 'Rail Crossing', 'ACTIVE', 34.056235, -118.239683, 'Engineering'),
+                  (@subdivisionId, 'LS-4', 'Main', '2', 5.00, 10.00, 'Turnout A', 'Switch', 'Turnout', 'ACTIVE', 34.058235, -118.237683, 'Engineering'),
+                  (@subdivisionId, 'LS-5', 'Main', '1', 10.00, 15.00, 'Detector A', 'Other', 'Detector', 'ACTIVE', 34.060235, -118.235683, 'Engineering'),
+                  (@subdivisionId, 'LS-6', 'Main', '2', 10.00, 15.00, 'Derail A', 'Other', 'Derail', 'ACTIVE', 34.062235, -118.233683, 'Engineering'),
+                  (@subdivisionId, 'LS-7', 'Main', '1', 15.00, 20.00, 'Tunnel A', 'Other', 'Tunnel', 'ACTIVE', 34.064235, -118.231683, 'Engineering'),
+                  (@subdivisionId, 'LS-8', 'Main', '2', 15.00, 20.00, 'Bridge A', 'Other', 'Bridge', 'ACTIVE', 34.066235, -118.229683, 'Engineering'),
+                  (@subdivisionId, 'LS-9', 'Main', '1', 20.00, 25.00, 'Arch A', 'Other', 'Arch', 'ACTIVE', 34.068235, -118.227683, 'Engineering'),
+                  (@subdivisionId, 'LS-10', 'Main', '2', 20.00, 25.00, 'Culvert A', 'Other', 'Culvert', 'ACTIVE', 34.070235, -118.225683, 'Engineering'),
+                  (@subdivisionId, 'LS-11', 'Main', '1', 25.00, 30.00, 'Depot A', 'Other', 'Depot', 'ACTIVE', 34.072235, -118.223683, 'Engineering'),
+                  (@subdivisionId, 'LS-12', 'Main', '2', 25.00, 30.00, 'Station A', 'Other', 'Station', 'ACTIVE', 34.074235, -118.221683, 'Engineering'),
+                  (@subdivisionId, 'LS-13', 'Main', '1', 30.00, 35.00, 'Control Point CP-1', 'Other', 'Control Point', 'ACTIVE', 34.076235, -118.219683, 'Engineering'),
+                  (@subdivisionId, 'LS-14', 'Main', '2', 30.00, 35.00, 'Snowshed A', 'Other', 'Snowshed', 'ACTIVE', 34.078235, -118.217683, 'Engineering');
+              END
+            `,
+            `getAgencySubdivisions.bootstrap.seedTracks.${subdivisionId}`
+          );
+
+          await queryWithRetry(
+            (pool) => pool.request()
+              .input('subdivisionId', sql.Int, subdivisionId),
+            `
+              IF NOT EXISTS (
+                SELECT 1
+                FROM Milepost_Geometry
+                WHERE Subdivision_ID = @subdivisionId
+              )
+              BEGIN
+                INSERT INTO Milepost_Geometry (
+                  Subdivision_ID, MP, Latitude, Longitude, Apple_Map_URL, Google_Map_URL
+                )
+                VALUES
+                  (@subdivisionId, 0.00, 34.052235, -118.243683, NULL, NULL),
+                  (@subdivisionId, 2.50, 34.053235, -118.242683, NULL, NULL),
+                  (@subdivisionId, 5.00, 34.054235, -118.241683, NULL, NULL);
+              END
+            `,
+            `getAgencySubdivisions.bootstrap.seedMileposts.${subdivisionId}`
+          );
+        }
+
+        result = await queryWithRetry(
+          (pool) => pool.request()
+            .input('agencyId', sql.Int, agencyId),
+          `
+            SELECT 
+              Subdivision_ID,
+              Subdivision_Code,
+              Subdivision_Name,
+              Is_Active
+            FROM Subdivisions
+            WHERE Agency_ID = @agencyId
+              AND (Is_Active = 1 OR Is_Active IS NULL)
+            ORDER BY Subdivision_Code
+          `,
+          'getAgencySubdivisions.listAfterBootstrap'
+        );
+      }
       
       res.json({
         success: true,
@@ -350,18 +544,19 @@ class AgencyController {
   async getSubdivisionTracks(req, res) {
     try {
       const { agencyId, subdivisionId } = req.params;
-      
-      const pool = await getConnection();
-      
+
       // Verify subdivision belongs to agency
-      const subdivisionCheck = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .query(`
+      const subdivisionCheck = await queryWithRetry(
+        (pool) => pool.request()
+          .input('agencyId', sql.Int, agencyId)
+          .input('subdivisionId', sql.Int, subdivisionId),
+        `
           SELECT Subdivision_ID
           FROM Subdivisions
           WHERE Agency_ID = @agencyId AND Subdivision_ID = @subdivisionId
-        `);
+        `,
+        'getSubdivisionTracks.verifySubdivision'
+      );
       
       if (subdivisionCheck.recordset.length === 0) {
         return res.status(404).json({
@@ -371,9 +566,10 @@ class AgencyController {
       }
       
       // Get distinct track numbers for this subdivision
-      const result = await pool.request()
-        .input('subdivisionId', sql.Int, subdivisionId)
-        .query(`
+      const result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('subdivisionId', sql.Int, subdivisionId),
+        `
           SELECT DISTINCT
             Track_Type,
             Track_Number
@@ -381,7 +577,19 @@ class AgencyController {
           WHERE Subdivision_ID = @subdivisionId
           AND Asset_Status = 'ACTIVE'
           ORDER BY Track_Type, Track_Number
-        `);
+        `,
+        'getSubdivisionTracks.listTracks'
+      );
+
+      if (result.recordset.length === 0 && process.env.NODE_ENV !== 'production') {
+        return res.json({
+          success: true,
+          data: [
+            { Track_Type: 'Main', Track_Number: '1' },
+            { Track_Type: 'Main', Track_Number: '2' },
+          ]
+        });
+      }
       
       res.json({
         success: true,

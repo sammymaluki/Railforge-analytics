@@ -1,6 +1,85 @@
 const db = require('../config/database');
 const { sql } = require('../config/database');
 
+const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const INTERPOLATE_SCHEMA_CACHE_TTL_MS = 60 * 1000;
+let interpolateSchemaCache = null;
+let interpolateSchemaCacheAt = 0;
+
+const isTransientDbError = (error) => {
+  if (!error) return false;
+  if (error.code && TRANSIENT_DB_CODES.has(error.code)) return true;
+  const message = String(error.message || '').toLowerCase();
+  return (
+    message.includes('connection lost') ||
+    message.includes('econnreset') ||
+    message.includes('failed to connect') ||
+    message.includes('timeout') ||
+    message.includes('aborted')
+  );
+};
+
+const runQueryWithRetry = async (requestFactory, query, context, maxRetries = 5) => {
+  let lastError;
+  let forceReconnect = false;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+    try {
+      const pool = await db.getConnectionWithRecovery({ forceReconnect });
+      const request = requestFactory(pool);
+      forceReconnect = false;
+      return await request.query(query);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDbError(error) || attempt >= maxRetries) {
+        throw error;
+      }
+
+      forceReconnect = true;
+      const delay = 200 * (2 ** (attempt - 1));
+      // Keep log lightweight to avoid noisy error spam.
+      console.warn(`Track query attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms`, {
+        context,
+        error: error.message
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delay);
+    }
+  }
+
+  throw lastError;
+};
+
+const getInterpolateSchemaFlags = async (forceRefresh = false) => {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    interpolateSchemaCache &&
+    now - interpolateSchemaCacheAt < INTERPOLATE_SCHEMA_CACHE_TTL_MS
+  ) {
+    return interpolateSchemaCache;
+  }
+
+  const flagsResult = await runQueryWithRetry(
+    (pool) => pool.request(),
+    `
+      SELECT
+        OBJECT_ID('Track_Mileposts', 'U') AS HasTrackMileposts,
+        COL_LENGTH('Milepost_Geometry', 'Is_Active') AS HasMPIsActive
+    `,
+    'interpolateMilepost.flags'
+  );
+
+  const flags = flagsResult.recordset[0] || {};
+  interpolateSchemaCache = {
+    hasTrackMileposts: flags.HasTrackMileposts !== null,
+    hasMPIsActive: flags.HasMPIsActive !== null,
+  };
+  interpolateSchemaCacheAt = now;
+  return interpolateSchemaCache;
+};
+
 /**
  * Track and Milepost Controller
  * Handles track-based distance calculations and milepost interpolation
@@ -116,14 +195,67 @@ exports.interpolateMilepost = async (req, res) => {
       });
     }
 
-    const request = new db.Request();
-    const result = await request
+    const { hasTrackMileposts, hasMPIsActive } = await getInterpolateSchemaFlags(false);
+
+    const buildRequest = (pool) => pool.request()
       .input('Subdivision_ID', db.Int, subdivisionId)
       .input('Latitude', sql.Float, latitude)
-      .input('Longitude', sql.Float, longitude)
-      .query(`
+      .input('Longitude', sql.Float, longitude);
+
+    let result = hasTrackMileposts
+      ? await runQueryWithRetry(
+        (pool) => buildRequest(pool),
+        `
+          SELECT TOP 10
+            Milepost,
+            Latitude,
+            Longitude,
+            (
+              6371 * 2 * ASIN(
+                SQRT(
+                  POWER(SIN((RADIANS(Latitude) - RADIANS(@Latitude)) / 2), 2) +
+                  COS(RADIANS(@Latitude)) * COS(RADIANS(Latitude)) *
+                  POWER(SIN((RADIANS(Longitude) - RADIANS(@Longitude)) / 2), 2)
+                )
+              )
+            ) * 0.621371 AS Distance_Miles
+          FROM Track_Mileposts
+          WHERE Subdivision_ID = @Subdivision_ID
+          ORDER BY Distance_Miles
+        `,
+        'interpolateMilepost.trackMileposts'
+      )
+      : await runQueryWithRetry(
+        (pool) => buildRequest(pool),
+        `
+          SELECT TOP 10
+            MP AS Milepost,
+            Latitude,
+            Longitude,
+            (
+              6371 * 2 * ASIN(
+                SQRT(
+                  POWER(SIN((RADIANS(Latitude) - RADIANS(@Latitude)) / 2), 2) +
+                  COS(RADIANS(@Latitude)) * COS(RADIANS(Latitude)) *
+                  POWER(SIN((RADIANS(Longitude) - RADIANS(@Longitude)) / 2), 2)
+                )
+              )
+            ) * 0.621371 AS Distance_Miles
+          FROM Milepost_Geometry
+          WHERE Subdivision_ID = @Subdivision_ID
+            ${hasMPIsActive ? 'AND Is_Active = 1' : ''}
+          ORDER BY Distance_Miles
+        `,
+        'interpolateMilepost.milepostGeometryPrimary'
+      );
+
+    // Fallback: Track_Mileposts can exist but be empty for some agencies.
+    if (hasTrackMileposts && result.recordset.length === 0) {
+      result = await runQueryWithRetry(
+        (pool) => buildRequest(pool),
+        `
         SELECT TOP 10
-          Milepost,
+          MP AS Milepost,
           Latitude,
           Longitude,
           (
@@ -135,10 +267,14 @@ exports.interpolateMilepost = async (req, res) => {
               )
             )
           ) * 0.621371 AS Distance_Miles
-        FROM Track_Mileposts
+        FROM Milepost_Geometry
         WHERE Subdivision_ID = @Subdivision_ID
+          ${hasMPIsActive ? 'AND Is_Active = 1' : ''}
         ORDER BY Distance_Miles
-      `);
+      `,
+        'interpolateMilepost.milepostGeometryFallback'
+      );
+    }
 
     const nearbyPoints = result.recordset;
 

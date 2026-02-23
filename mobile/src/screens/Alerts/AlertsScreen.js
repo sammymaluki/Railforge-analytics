@@ -13,17 +13,22 @@ import { useSelector, useDispatch } from 'react-redux';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { fetchAlerts, markAlertAsRead, deleteAlert } from '../../store/slices/alertSlice';
 import theme from '../../constants/theme';
+import apiService from '../../services/api/ApiService';
 
 const AlertsScreen = () => {
   const dispatch = useDispatch();
   const { alerts, unreadAlertsCount, loading } = useSelector((state) => state.alerts);
+  const { user } = useSelector((state) => state.auth);
+  const agencyId = user?.Agency_ID ?? user?.agency_id ?? user?.agencyId;
   const [filter, setFilter] = useState('All');
   const [refreshing, setRefreshing] = useState(false);
+  const [alertConfigs, setAlertConfigs] = useState([]);
 
   const filters = ['All', 'Unread', 'Critical', 'Warning', 'Info'];
 
   useEffect(() => {
     loadAlerts();
+    loadAlertConfigurations();
   }, []);
 
   const loadAlerts = async () => {
@@ -31,6 +36,18 @@ const AlertsScreen = () => {
       await dispatch(fetchAlerts()).unwrap();
     } catch (error) {
       Alert.alert('Error', 'Failed to load alerts');
+    }
+  };
+
+  const loadAlertConfigurations = async () => {
+    if (!agencyId) {
+      return;
+    }
+    try {
+      const response = await apiService.getAlertConfigurations(agencyId);
+      setAlertConfigs(response?.data?.configurations || []);
+    } catch (error) {
+      setAlertConfigs([]);
     }
   };
 
@@ -221,6 +238,17 @@ const AlertsScreen = () => {
         ))}
       </ScrollView>
 
+      {alertConfigs.length > 0 && (
+        <View style={styles.configCard}>
+          <Text style={styles.configTitle}>System Alert Settings</Text>
+          {alertConfigs.slice(0, 6).map((cfg) => (
+            <Text key={cfg.Config_ID} style={styles.configText}>
+              {cfg.Config_Type} {cfg.Alert_Level}: {cfg.Distance_Miles} mi
+            </Text>
+          ))}
+        </View>
+      )}
+
       <FlatList
         data={filteredAlerts}
         keyExtractor={(item, index) => item.id?.toString() || `alert-${index}`}
@@ -244,6 +272,27 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: theme.colors.background,
+  },
+  configCard: {
+    marginHorizontal: theme.spacing.lg,
+    marginTop: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: 'rgba(255, 209, 0, 0.08)',
+    padding: theme.spacing.md,
+  },
+  configTitle: {
+    color: theme.colors.accent,
+    fontWeight: '700',
+    marginBottom: theme.spacing.xs,
+    fontSize: 13,
+  },
+  configText: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
   },
   header: {
     flexDirection: 'row',

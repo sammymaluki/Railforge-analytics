@@ -100,8 +100,8 @@ const startServer = async () => {
     // Connect to database
     await connectToDatabase();
     
-    // Start server
-    const server = app.listen(PORT, () => {
+    // Start server - listen on all interfaces for Expo tunnel access
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`
 🚀 Sidekick System
    Server running on port ${PORT}

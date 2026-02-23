@@ -7,6 +7,7 @@
  * Usage: node backend/scripts/seed-track-numbers.js
  */
 
+require('dotenv').config();
 const sql = require('mssql');
 const ExcelJS = require('exceljs');
 const path = require('path');
@@ -17,11 +18,13 @@ const dbConfig = {
   database: process.env.DB_NAME || 'HerzogRailAuthority',
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || 'YourStrong!Passw0rd',
-  port: parseInt(process.env.DB_PORT) || 1433,
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    connectTimeout: 15000,
+    requestTimeout: 15000
   }
 };
 

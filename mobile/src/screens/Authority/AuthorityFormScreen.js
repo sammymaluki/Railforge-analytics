@@ -48,11 +48,13 @@ const AuthorityFormScreen = ({ navigation, route }) => {
   const authorityState = useSelector((state) => state.authority);
   const isCreating = Boolean(authorityState.isCreating);
   const error = authorityState.error;
+  const agencyId = user?.Agency_ID ?? user?.agency_id ?? user?.agencyId;
 
   const [subdivisions, setSubdivisions] = useState([]);
   const [trackNumbers, setTrackNumbers] = useState([]);
   const [showExpirationPicker, setShowExpirationPicker] = useState(false);
   const [expirationDate, setExpirationDate] = useState(new Date());
+  const [expirationInput, setExpirationInput] = useState('');
   
   // Dropdown states
   const [authorityTypeOpen, setAuthorityTypeOpen] = useState(false);
@@ -90,20 +92,45 @@ const AuthorityFormScreen = ({ navigation, route }) => {
     },
   });
 
+  const watchedExpirationTime = watch('expirationTime');
+
+  useEffect(() => {
+    if (!watchedExpirationTime) {
+      setExpirationInput('');
+      return;
+    }
+
+    const date = new Date(watchedExpirationTime);
+    if (Number.isNaN(date.getTime())) {
+      setExpirationInput('');
+      return;
+    }
+
+    const yyyy = date.getFullYear();
+    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
+    const dd = `${date.getDate()}`.padStart(2, '0');
+    const hh = `${date.getHours()}`.padStart(2, '0');
+    const min = `${date.getMinutes()}`.padStart(2, '0');
+    setExpirationInput(`${yyyy}-${mm}-${dd} ${hh}:${min}`);
+  }, [watchedExpirationTime]);
+
   // Load subdivisions from database
   useEffect(() => {
     loadSubdivisions();
-  }, []);
+  }, [agencyId]);
 
   // Watch subdivision selection to load track numbers
   const selectedSubdivision = watch('subdivisionId');
   useEffect(() => {
-    if (selectedSubdivision && user?.Agency_ID) {
+    // Clear existing track selection whenever subdivision changes
+    setValue('trackNumber', null);
+
+    if (selectedSubdivision && agencyId) {
       loadTrackNumbers(selectedSubdivision);
     } else {
       setTrackNumbers([]);
     }
-  }, [selectedSubdivision]);
+  }, [selectedSubdivision, agencyId, setValue]);
 
   useEffect(() => {
     if (error) {
@@ -112,28 +139,37 @@ const AuthorityFormScreen = ({ navigation, route }) => {
   }, [error]);
 
   const loadSubdivisions = async () => {
+    if (!agencyId) {
+      console.warn('Cannot load subdivisions: missing agency ID on user object');
+      setSubdivisions([]);
+      return;
+    }
+
     try {
       // Fetch subdivisions from backend API
-      const response = await apiService.getAgencySubdivisions(user?.Agency_ID);
+      const response = await apiService.getAgencySubdivisions(agencyId);
       
       console.log('Subdivision API response:', response);
       
       if (response.success && response.data) {
-        const subdivisionOptions = response.data.map(sub => ({
-          label: `${sub.Subdivision_Code} - ${sub.Subdivision_Name}`,
-          value: sub.Subdivision_ID,
-        }));
+        const subdivisionOptions = response.data
+          .map((sub) => {
+            const subdivisionId = sub.Subdivision_ID ?? sub.subdivision_id;
+            const subdivisionCode = sub.Subdivision_Code ?? sub.subdivision_code ?? '';
+            const subdivisionName = sub.Subdivision_Name ?? sub.subdivision_name ?? '';
+            const parsedId = Number(subdivisionId);
+
+            if (!Number.isFinite(parsedId)) return null;
+
+            return {
+              label: `${subdivisionCode} - ${subdivisionName}`.trim(),
+              value: parsedId,
+            };
+          })
+          .filter(Boolean);
         
         if (subdivisionOptions.length === 0) {
-          // Add fallback sample subdivisions if none returned
-          console.warn('No subdivisions found from API, using fallback data');
-          subdivisionOptions.push(
-            { label: 'MEDLIN - Medlin Subdivision', value: 1 },
-            { label: 'NORTH - North Line', value: 2 },
-            { label: 'SOUTH - South Line', value: 3 },
-            { label: 'EAST - East Line', value: 4 },
-            { label: 'WEST - West Line', value: 5 }
-          );
+          console.log(`No subdivisions returned for agency ${agencyId}`);
         }
         
         setSubdivisions(subdivisionOptions);
@@ -143,28 +179,34 @@ const AuthorityFormScreen = ({ navigation, route }) => {
       }
     } catch (error) {
       console.error('Failed to load subdivisions from API:', error);
-      // Set fallback data on error
-      setSubdivisions([
-        { label: 'MEDLIN - Medlin Subdivision', value: 1 },
-        { label: 'NORTH - North Line', value: 2 },
-        { label: 'SOUTH - South Line', value: 3 },
-        { label: 'EAST - East Line', value: 4 },
-        { label: 'WEST - West Line', value: 5 }
-      ]);
+      setSubdivisions([]);
     }
   };
 
   const loadTrackNumbers = async (subdivisionId) => {
+    if (!agencyId || !subdivisionId) {
+      setTrackNumbers([]);
+      return;
+    }
+
     try {
-      const response = await apiService.getSubdivisionTracks(user?.Agency_ID, subdivisionId);
+      const response = await apiService.getSubdivisionTracks(agencyId, subdivisionId);
       
       console.log('Track numbers API response:', response);
       
       if (response.success && response.data) {
-        const trackNumberOptions = response.data.map(track => ({
-          label: `${track.Track_Type} - ${track.Track_Number}`,
-          value: `${track.Track_Type}-${track.Track_Number}`, // Make unique by combining both
-        }));
+        const trackNumberOptions = response.data
+          .map((track) => {
+            const trackType = track.Track_Type ?? track.track_type;
+            const trackNumber = track.Track_Number ?? track.track_number;
+            if (!trackType || !trackNumber) return null;
+
+            return {
+              label: `${trackType} - ${trackNumber}`,
+              value: `${trackType}-${trackNumber}`, // Make unique by combining both
+            };
+          })
+          .filter(Boolean);
         
         setTrackNumbers(trackNumberOptions);
         console.log('Loaded', trackNumberOptions.length, 'track numbers from API');
@@ -172,6 +214,9 @@ const AuthorityFormScreen = ({ navigation, route }) => {
         setTrackNumbers([]);
       }
     } catch (error) {
+      if (error?.status === 404) {
+        console.warn('No tracks found for selected subdivision under this agency');
+      }
       console.error('Failed to load track numbers from API:', error);
       setTrackNumbers([]);
     }
@@ -220,6 +265,30 @@ const AuthorityFormScreen = ({ navigation, route }) => {
   const clearExpirationDate = () => {
     setExpirationDate(new Date());
     setValue('expirationTime', null);
+    setExpirationInput('');
+  };
+
+  const applyManualExpirationValue = () => {
+    const trimmed = expirationInput.trim();
+    if (!trimmed) {
+      setValue('expirationTime', null);
+      return;
+    }
+
+    const normalized = trimmed.replace('T', ' ');
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) {
+      Alert.alert('Invalid Date', 'Use format: YYYY-MM-DD HH:mm');
+      return;
+    }
+
+    if (parsed < new Date()) {
+      Alert.alert('Invalid Date', 'Expiration must be in the future.');
+      return;
+    }
+
+    setExpirationDate(parsed);
+    setValue('expirationTime', parsed);
   };
 
   const onSubmit = async (data) => {
@@ -230,11 +299,25 @@ const AuthorityFormScreen = ({ navigation, route }) => {
         // Extract just the track number part after the dash
         trackNumber = trackNumber.split('-').slice(1).join('-'); // Handle cases like "Main-1-2"
       }
+
+      let normalizedExpirationTime;
+      if (data.expirationTime !== null && data.expirationTime !== undefined && data.expirationTime !== '') {
+        const parsedExpiration = new Date(data.expirationTime);
+        if (!Number.isNaN(parsedExpiration.getTime())) {
+          normalizedExpirationTime = parsedExpiration.toISOString();
+        }
+      }
       
       const authorityData = {
         ...data,
         trackNumber, // Use the extracted track number
       };
+
+      if (normalizedExpirationTime) {
+        authorityData.expirationTime = normalizedExpirationTime;
+      } else {
+        delete authorityData.expirationTime;
+      }
       
       const result = await dispatch(createAuthority(authorityData)).unwrap();
       
@@ -497,13 +580,13 @@ const AuthorityFormScreen = ({ navigation, route }) => {
             >
               <MaterialCommunityIcons name="calendar" size={20} color="#FFD100" />
               <Text style={styles.expirationText}>
-                {watch('expirationTime')
-                  ? new Date(watch('expirationTime')).toLocaleString()
+                {watchedExpirationTime
+                  ? new Date(watchedExpirationTime).toLocaleString()
                   : 'Set expiration time'}
               </Text>
             </TouchableOpacity>
             
-            {watch('expirationTime') && (
+            {watchedExpirationTime && (
               <TouchableOpacity
                 style={styles.clearButton}
                 onPress={clearExpirationDate}
@@ -512,6 +595,15 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               </TouchableOpacity>
             )}
           </View>
+          <TextInput
+            style={styles.expirationInput}
+            placeholder="Or enter manually: YYYY-MM-DD HH:mm"
+            placeholderTextColor="#777777"
+            value={expirationInput}
+            onChangeText={setExpirationInput}
+            onEndEditing={applyManualExpirationValue}
+            autoCapitalize="none"
+          />
           
           {/* Only render DateTimePicker component on iOS */}
           {Platform.OS === 'ios' && showExpirationPicker && (
@@ -634,6 +726,16 @@ const styles = StyleSheet.create({
   clearButton: {
     marginLeft: 10,
     padding: 10,
+  },
+  expirationInput: {
+    marginTop: 8,
+    backgroundColor: '#2A2A2A',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 14,
+    color: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#333333',
   },
   exampleContainer: {
     backgroundColor: '#1A1A1A',

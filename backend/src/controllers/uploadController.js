@@ -296,16 +296,101 @@ class UploadController {
     }
   }
 
-  // eslint-disable-next-line no-unused-vars
-  async processMilepostData(_filePath, _agencyId) {
-    // Similar implementation for milepost data
-    // This would process the Direct_MP sheet from the provided Excel
-    
-    return {
-      imported: 0,
-      total: 0,
-      message: 'Milepost data processing would be implemented here'
-    };
+  async processMilepostData(fileBuffer, agencyId) {
+    const pool = getConnection();
+
+    try {
+      const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+      const preferredSheet = workbook.SheetNames.find((name) => name.toLowerCase().includes('direct_mp'))
+        || workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[preferredSheet];
+      const data = XLSX.utils.sheet_to_json(worksheet);
+
+      let imported = 0;
+      let skipped = 0;
+      const errors = [];
+
+      for (const row of data) {
+        try {
+          const subdivisionCode = row.Sub_Div || row.Subdivision || row.Subdivision_Code || row.SUB_DIV;
+          const milepost = row.MP ?? row.Milepost ?? row.MILEPOST;
+          const latitude = row.Latitude ?? row.LATITUDE;
+          const longitude = row.Longitude ?? row.LONGITUDE;
+          const trackType = row.Track_Type || row.TRACK_TYPE || null;
+          const trackNumber = row.Track_Number || row.TRACK_NUMBER || null;
+          const elevation = row.Elevation ?? row.ELEVATION ?? null;
+
+          if (!subdivisionCode || milepost === undefined || latitude === undefined || longitude === undefined) {
+            skipped += 1;
+            errors.push(`Missing required columns in row: ${JSON.stringify(row)}`);
+            continue;
+          }
+
+          const subdivisionResult = await pool.request()
+            .input('agencyId', sql.Int, agencyId)
+            .input('subdivisionCode', sql.NVarChar, String(subdivisionCode).trim())
+            .query(`
+              SELECT TOP 1 Subdivision_ID
+              FROM Subdivisions
+              WHERE Agency_ID = @agencyId
+                AND (
+                  UPPER(Subdivision_Code) = UPPER(@subdivisionCode)
+                  OR UPPER(Subdivision_Name) = UPPER(@subdivisionCode)
+                  OR UPPER(Subdivision_Name) = UPPER(@subdivisionCode + ' Subdivision')
+                )
+            `);
+
+          if (!subdivisionResult.recordset.length) {
+            skipped += 1;
+            errors.push(`Subdivision not found: ${subdivisionCode}`);
+            continue;
+          }
+
+          const subdivisionId = subdivisionResult.recordset[0].Subdivision_ID;
+
+          await pool.request()
+            .input('subdivisionId', sql.Int, subdivisionId)
+            .input('trackType', sql.VarChar(50), trackType)
+            .input('trackNumber', sql.VarChar(10), trackNumber ? String(trackNumber) : null)
+            .input('mp', sql.Decimal(10, 4), parseFloat(milepost))
+            .input('latitude', sql.Decimal(10, 7), parseFloat(latitude))
+            .input('longitude', sql.Decimal(11, 7), parseFloat(longitude))
+            .input('elevation', sql.Decimal(10, 2), elevation !== null ? parseFloat(elevation) : null)
+            .query(`
+              IF NOT EXISTS (
+                SELECT 1
+                FROM Milepost_Geometry
+                WHERE Subdivision_ID = @subdivisionId
+                  AND MP = @mp
+              )
+              BEGIN
+                INSERT INTO Milepost_Geometry (
+                  Subdivision_ID, Track_Type, Track_Number, MP, Latitude, Longitude, Elevation, Is_Active
+                )
+                VALUES (
+                  @subdivisionId, @trackType, @trackNumber, @mp, @latitude, @longitude, @elevation, 1
+                )
+              END
+            `);
+
+          imported += 1;
+        } catch (rowError) {
+          skipped += 1;
+          errors.push(`Error processing row: ${rowError.message}`);
+        }
+      }
+
+      return {
+        imported,
+        skipped,
+        total: data.length,
+        errors: errors.length,
+        messages: errors.slice(0, 20).map((err) => ({ type: 'error', message: err })),
+      };
+    } catch (error) {
+      logger.error('Process milepost data error:', error);
+      throw error;
+    }
   }
 
   /**

@@ -90,6 +90,49 @@ class Pin extends BaseModel {
     const result = await this.executeQuery(query, { authorityId });
     return result.recordset;
   }
+
+  async update(pinId, pinData) {
+    const {
+      pinTypeId,
+      latitude,
+      longitude,
+      trackType = null,
+      trackNumber = null,
+      mp = null,
+      notes = null,
+      photoUrl = null
+    } = pinData;
+
+    const query = `
+      UPDATE Pins
+      SET
+        Pin_Type_ID = COALESCE(@pinTypeId, Pin_Type_ID),
+        Latitude = COALESCE(@latitude, Latitude),
+        Longitude = COALESCE(@longitude, Longitude),
+        Track_Type = @trackType,
+        Track_Number = @trackNumber,
+        MP = @mp,
+        Notes = @notes,
+        Photo_URL = @photoUrl,
+        Modified_Date = GETDATE()
+      OUTPUT INSERTED.*
+      WHERE Pin_ID = @pinId
+    `;
+
+    const result = await this.executeQuery(query, {
+      pinId,
+      pinTypeId: pinTypeId || null,
+      latitude: latitude ?? null,
+      longitude: longitude ?? null,
+      trackType,
+      trackNumber,
+      mp,
+      notes,
+      photoUrl
+    });
+
+    return result.recordset[0] || null;
+  }
 }
 
 module.exports = new Pin();

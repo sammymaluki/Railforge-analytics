@@ -17,6 +17,7 @@
     "format": "prettier --write src/**/*.js",
     "db:migrate": "node scripts/run-migrations.js",
     "db:seed": "node scripts/seed-database.js",
+    "db:validate": "node scripts/validate-database.js",
     "db:reset": "node scripts/reset-database.js"
   },
   "keywords": [

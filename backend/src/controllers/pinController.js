@@ -78,6 +78,46 @@ class PinController {
       res.status(500).json({ success: false, error: 'Failed to get trip pins' });
     }
   }
+
+  async updatePin(req, res) {
+    try {
+      const { pinId } = req.params;
+      const {
+        pinTypeId = null,
+        latitude = null,
+        longitude = null,
+        trackType = null,
+        trackNumber = null,
+        mp = null,
+        notes = null,
+        photoUrl = null
+      } = req.body;
+
+      if (!pinId) {
+        return res.status(400).json({ success: false, error: 'Pin ID is required' });
+      }
+
+      const updated = await Pin.update(pinId, {
+        pinTypeId,
+        latitude,
+        longitude,
+        trackType,
+        trackNumber,
+        mp,
+        notes,
+        photoUrl
+      });
+
+      if (!updated) {
+        return res.status(404).json({ success: false, error: 'Pin not found' });
+      }
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      logger.error('Update pin error:', error);
+      res.status(500).json({ success: false, error: 'Failed to update pin' });
+    }
+  }
 }
 
 module.exports = new PinController();

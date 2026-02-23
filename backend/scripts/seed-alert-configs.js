@@ -1,15 +1,19 @@
+require('dotenv').config();
 const sql = require('mssql');
 
 // Database configuration
 const sqlConfig = {
+  server: process.env.DB_HOST || 'localhost',
+  database: process.env.DB_NAME || 'HerzogRailAuthority',
   user: process.env.DB_USER || 'sa',
   password: process.env.DB_PASSWORD || 'Herzog2024!',
-  server: process.env.DB_SERVER || 'localhost',
-  database: process.env.DB_NAME || 'HerzogRailAuthority',
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
     encrypt: false,
     trustServerCertificate: true,
-    enableArithAbort: true
+    enableArithAbort: true,
+    connectTimeout: 15000,
+    requestTimeout: 15000
   },
   pool: {
     max: 10,
@@ -35,6 +39,8 @@ async function seedAlertConfigs() {
         configType: 'Proximity_Alert',
         alertLevel: 'Informational',
         distanceMiles: 1.0,
+        timeMinutes: 5,
+        description: 'Informational alert when workers are detected within 1 mile radius',
         messageTemplate: 'Worker detected within 1 mile',
         isActive: true
       },
@@ -43,6 +49,8 @@ async function seedAlertConfigs() {
         configType: 'Proximity_Alert',
         alertLevel: 'Warning',
         distanceMiles: 0.5,
+        timeMinutes: 3,
+        description: 'Warning alert when workers approach within 0.5 miles - exercise caution',
         messageTemplate: 'Worker detected within 0.5 miles - exercise caution',
         isActive: true
       },
@@ -51,6 +59,8 @@ async function seedAlertConfigs() {
         configType: 'Proximity_Alert',
         alertLevel: 'Critical',
         distanceMiles: 0.25,
+        timeMinutes: 1,
+        description: 'Critical alert requiring immediate action when workers are within 0.25 miles',
         messageTemplate: 'CRITICAL: Worker detected within 0.25 miles - immediate action required',
         isActive: true
       },
@@ -60,6 +70,8 @@ async function seedAlertConfigs() {
         configType: 'Boundary_Alert',
         alertLevel: 'Informational',
         distanceMiles: 1.0,
+        timeMinutes: 5,
+        description: 'Informational alert for authority boundary approaching at 1 mile',
         messageTemplate: 'Approaching authority boundary (1 mile)',
         isActive: true
       },
@@ -68,6 +80,8 @@ async function seedAlertConfigs() {
         configType: 'Boundary_Alert',
         alertLevel: 'Warning',
         distanceMiles: 0.5,
+        timeMinutes: 2,
+        description: 'Warning alert as authority boundary approaches within 0.5 miles',
         messageTemplate: 'WARNING: Approaching authority boundary (0.5 miles)',
         isActive: true
       },
@@ -76,6 +90,8 @@ async function seedAlertConfigs() {
         configType: 'Boundary_Alert',
         alertLevel: 'Critical',
         distanceMiles: 0.25,
+        timeMinutes: 1,
+        description: 'Critical alert when authority boundary exit is imminent at 0.25 miles',
         messageTemplate: 'CRITICAL: Authority boundary exit imminent (0.25 miles)',
         isActive: true
       },
@@ -85,6 +101,8 @@ async function seedAlertConfigs() {
         configType: 'Overlap_Alert',
         alertLevel: 'Warning',
         distanceMiles: 0,
+        timeMinutes: 5,
+        description: 'Warning alert when authority overlap is detected',
         messageTemplate: 'Authority overlap detected',
         isActive: true
       },
@@ -93,6 +111,8 @@ async function seedAlertConfigs() {
         configType: 'Overlap_Alert',
         alertLevel: 'Critical',
         distanceMiles: 0,
+        timeMinutes: 2,
+        description: 'Critical alert for severe authority overlap requiring immediate coordination',
         messageTemplate: 'CRITICAL: Severe authority overlap detected - immediate coordination required',
         isActive: true
       }
@@ -106,16 +126,25 @@ async function seedAlertConfigs() {
         .input('alertLevel', sql.NVarChar, config.alertLevel)
         .input('distanceMiles', sql.Decimal(5, 2), config.distanceMiles)
         .input('messageTemplate', sql.NVarChar, config.messageTemplate)
+        .input('timeMinutes', sql.Int, config.timeMinutes)
+        .input('description', sql.NVarChar, config.description)
         .input('isActive', sql.Bit, config.isActive ? 1 : 0)
         .query(`
-          INSERT INTO Alert_Configurations (
-            Agency_ID, Config_Type, Alert_Level, Distance_Miles,
-            Message_Template, Is_Active
+          IF NOT EXISTS (
+            SELECT 1 FROM Alert_Configurations 
+            WHERE Agency_ID = @agencyId AND Config_Type = @configType 
+              AND Alert_Level = @alertLevel AND Distance_Miles = @distanceMiles
           )
-          VALUES (
-            @agencyId, @configType, @alertLevel, @distanceMiles,
-            @messageTemplate, @isActive
-          )
+          BEGIN
+            INSERT INTO Alert_Configurations (
+              Agency_ID, Config_Type, Alert_Level, Distance_Miles,
+              Message_Template, Time_Minutes, Description, Is_Active
+            )
+            VALUES (
+              @agencyId, @configType, @alertLevel, @distanceMiles,
+              @messageTemplate, @timeMinutes, @description, @isActive
+            )
+          END
         `);
       created++;
     }

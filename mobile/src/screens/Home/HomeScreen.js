@@ -139,9 +139,7 @@ const HomeScreen = ({ navigation }) => {
     if (value) {
       try {
         await gpsTrackingService.init();
-        if (activeAuthority) {
-          await gpsTrackingService.startTracking(activeAuthority);
-        }
+        await gpsTrackingService.startTracking(activeAuthority || null);
         setGpsActive(true);
       } catch (error) {
         console.error('Failed to enable GPS tracking:', error);
@@ -176,11 +174,14 @@ const HomeScreen = ({ navigation }) => {
         .filter((layer) => visibility[layer.id])
         .map((layer) => layer.id);
 
-      await Promise.all(
-        visibleLayerIds
-          .filter((layerId) => !layerData[layerId])
-          .map((layerId) => loadLayerData(layerId))
-      );
+      const missingLayerIds = visibleLayerIds
+        .filter((layerId) => !layerData[layerId]);
+
+      // Fetch sequentially to avoid overloading backend/DB when many layers are enabled.
+      for (const layerId of missingLayerIds) {
+        // eslint-disable-next-line no-await-in-loop
+        await loadLayerData(layerId);
+      }
     } catch (error) {
       console.error('Failed to load map layers:', error);
     } finally {

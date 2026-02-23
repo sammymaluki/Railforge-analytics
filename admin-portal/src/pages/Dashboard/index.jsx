@@ -263,9 +263,9 @@ const Dashboard = () => {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    recentAuthorities.map((authority) => (
+                    recentAuthorities.map((authority, idx) => (
                       <TableRow 
-                        key={authority.Authority_ID}
+                        key={authority.Authority_ID || `auth-${idx}`}
                         hover
                         sx={{ cursor: 'pointer' }}
                         onClick={() => navigate(`/authorities/${authority.Authority_ID}`)}
@@ -323,8 +323,8 @@ const Dashboard = () => {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    recentAlerts.map((alert) => (
-                      <TableRow key={alert.Alert_ID} hover>
+                    recentAlerts.map((alert, idx) => (
+                      <TableRow key={alert.Alert_ID || `alert-${idx}`} hover>
                         <TableCell>{alert.Alert_Type || 'N/A'}</TableCell>
                         <TableCell>
                           <Chip 
@@ -380,8 +380,8 @@ const Dashboard = () => {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    recentAuditLogs.map((log) => (
-                      <TableRow key={log.Log_ID} hover>
+                    recentAuditLogs.map((log, idx) => (
+                      <TableRow key={log.Log_ID || `log-${idx}`} hover>
                         <TableCell>
                           <Chip 
                             label={log.Action_Type || 'N/A'} 
