@@ -1,4 +1,4 @@
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 /*

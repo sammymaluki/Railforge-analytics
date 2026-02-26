@@ -19,6 +19,21 @@ const SettingsScreen = () => {
   const navigation = useNavigation();
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
+
+  const displayName =
+    user?.Employee_Name ||
+    user?.employeeName ||
+    user?.name ||
+    user?.Username ||
+    user?.username ||
+    'User';
+  const displayEmail =
+    user?.Email ||
+    user?.email ||
+    user?.Username ||
+    user?.username ||
+    'No email provided';
+  const displayRole = user?.Role || user?.role;
   
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -123,11 +138,11 @@ const SettingsScreen = () => {
         <View style={styles.avatarContainer}>
           <MaterialCommunityIcons name="account-circle" size={80} color={theme.colors.accent} />
         </View>
-        <Text style={styles.userName}>{user?.name || 'User'}</Text>
-        <Text style={styles.userEmail}>{user?.email || 'user@example.com'}</Text>
-        {user?.role && (
+        <Text style={styles.userName}>{displayName}</Text>
+        <Text style={styles.userEmail}>{displayEmail}</Text>
+        {displayRole && (
           <View style={styles.roleBadge}>
-            <Text style={styles.roleText}>{user.role}</Text>
+            <Text style={styles.roleText}>{displayRole}</Text>
           </View>
         )}
       </View>
@@ -204,8 +219,8 @@ const SettingsScreen = () => {
       {renderActionRow('logout', 'Logout', theme.colors.error, handleLogout)}
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>Sidekick</Text>
-        <Text style={styles.footerSubtext}>© RMedlin2026</Text>
+        <Text style={styles.footerText}>RailForge Analytics</Text>
+        <Text style={styles.footerSubtext}>Forging data into safer rail operations</Text>
       </View>
     </ScrollView>
   );

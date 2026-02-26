@@ -1,6 +1,12 @@
 const { getConnection, sql } = require('../config/database');
 const { logger } = require('../config/logger');
+const { canAccessAgency } = require('../utils/rbac');
 const ExcelJS = require('exceljs');
+const {
+  getRetentionPolicy,
+  updateRetentionPolicy,
+  runRetentionCleanup
+} = require('../services/auditEventService');
 
 /**
  * Audit Log Controller
@@ -26,7 +32,7 @@ const getAuditLogs = async (req, res) => {
     } = req.query;
 
     // Verify access (users can only view their agency's logs unless admin)
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied to this agency\'s audit logs'
@@ -42,12 +48,12 @@ const getAuditLogs = async (req, res) => {
 
     if (startDate) {
       whereConditions.push('sal.Created_Date >= @StartDate');
-      request.input('StartDate', sql.DateTime, new Date(startDate));
+      request.input('StartDate', sql.DateTime, new Date(`${startDate}T00:00:00.000Z`));
     }
 
     if (endDate) {
       whereConditions.push('sal.Created_Date <= @EndDate');
-      request.input('EndDate', sql.DateTime, new Date(endDate));
+      request.input('EndDate', sql.DateTime, new Date(`${endDate}T23:59:59.999Z`));
     }
 
     if (actionType && actionType !== 'all') {
@@ -93,7 +99,7 @@ const getAuditLogs = async (req, res) => {
         sal.Audit_ID,
         sal.User_ID,
         u.Username,
-        u.Employee_Name,
+        u.Employee_Name AS Employee_Name_Display,
         u.Email,
         sal.Action_Type,
         sal.Table_Name,
@@ -145,7 +151,7 @@ const getAuditLogStats = async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // Verify access
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -158,11 +164,11 @@ const getAuditLogStats = async (req, res) => {
 
     let dateFilter = '';
     if (startDate) {
-      request.input('StartDate', sql.DateTime, new Date(startDate));
+      request.input('StartDate', sql.DateTime, new Date(`${startDate}T00:00:00.000Z`));
       dateFilter += ' AND sal.Created_Date >= @StartDate';
     }
     if (endDate) {
-      request.input('EndDate', sql.DateTime, new Date(endDate));
+      request.input('EndDate', sql.DateTime, new Date(`${endDate}T23:59:59.999Z`));
       dateFilter += ' AND sal.Created_Date <= @EndDate';
     }
 
@@ -209,7 +215,7 @@ const getActionTypes = async (req, res) => {
     const { agencyId } = req.params;
 
     // Verify access
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -253,7 +259,7 @@ const getAffectedTables = async (req, res) => {
     const { agencyId } = req.params;
 
     // Verify access
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -305,7 +311,7 @@ const exportAuditLogs = async (req, res) => {
     } = req.query;
 
     // Verify access
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -321,12 +327,12 @@ const exportAuditLogs = async (req, res) => {
 
     if (startDate) {
       whereConditions.push('sal.Created_Date >= @StartDate');
-      request.input('StartDate', sql.DateTime, new Date(startDate));
+      request.input('StartDate', sql.DateTime, new Date(`${startDate}T00:00:00.000Z`));
     }
 
     if (endDate) {
       whereConditions.push('sal.Created_Date <= @EndDate');
-      request.input('EndDate', sql.DateTime, new Date(endDate));
+      request.input('EndDate', sql.DateTime, new Date(`${endDate}T23:59:59.999Z`));
     }
 
     if (actionType && actionType !== 'all') {
@@ -351,7 +357,7 @@ const exportAuditLogs = async (req, res) => {
         sal.Audit_ID,
         sal.User_ID,
         u.Username,
-        u.Employee_Name_Display,
+        u.Employee_Name AS Employee_Name_Display,
         sal.Action_Type,
         sal.Table_Name,
         sal.Record_ID,
@@ -467,11 +473,166 @@ const createAuditLog = async (userId, actionType, tableName, recordId, oldValue,
   }
 };
 
+const getAuditRetentionPolicy = async (req, res) => {
+  try {
+    const { agencyId } = req.params;
+    if (!canAccessAgency(req.user, parseInt(agencyId, 10))) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    const policy = await getRetentionPolicy(agencyId);
+    if (!policy) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to load retention policy'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        agencyId: Number(policy.Agency_ID),
+        auditLogRetentionDays: Number(policy.Audit_Log_Retention_Days),
+        alertLogRetentionDays: Number(policy.Alert_Log_Retention_Days),
+        gpsLogRetentionDays: Number(policy.GPS_Log_Retention_Days),
+        sessionLogRetentionDays: Number(policy.Session_Log_Retention_Days),
+        isEnabled: Boolean(policy.Is_Enabled),
+        lastRunDate: policy.Last_Run_Date,
+        modifiedDate: policy.Modified_Date,
+      },
+    });
+  } catch (error) {
+    logger.error('Get audit retention policy error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve retention policy',
+      error: error.message
+    });
+  }
+};
+
+const updateAuditRetentionPolicy = async (req, res) => {
+  try {
+    const { agencyId } = req.params;
+
+    if (req.user.Role !== 'Administrator') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only administrators can update retention policy'
+      });
+    }
+
+    const updated = await updateRetentionPolicy(agencyId, req.body || {});
+    if (!updated) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update retention policy'
+      });
+    }
+
+    await createAuditLog(
+      req.user.User_ID,
+      'RETENTION_POLICY_UPDATE',
+      'Audit_Retention_Policies',
+      null,
+      null,
+      {
+        agencyId: Number(agencyId),
+        auditLogRetentionDays: Number(updated.Audit_Log_Retention_Days),
+        alertLogRetentionDays: Number(updated.Alert_Log_Retention_Days),
+        gpsLogRetentionDays: Number(updated.GPS_Log_Retention_Days),
+        sessionLogRetentionDays: Number(updated.Session_Log_Retention_Days),
+        isEnabled: Boolean(updated.Is_Enabled),
+      },
+      req.ip,
+      req.get('User-Agent')
+    );
+
+    res.json({
+      success: true,
+      data: {
+        agencyId: Number(updated.Agency_ID),
+        auditLogRetentionDays: Number(updated.Audit_Log_Retention_Days),
+        alertLogRetentionDays: Number(updated.Alert_Log_Retention_Days),
+        gpsLogRetentionDays: Number(updated.GPS_Log_Retention_Days),
+        sessionLogRetentionDays: Number(updated.Session_Log_Retention_Days),
+        isEnabled: Boolean(updated.Is_Enabled),
+        lastRunDate: updated.Last_Run_Date,
+        modifiedDate: updated.Modified_Date,
+      },
+      message: 'Retention policy updated successfully'
+    });
+  } catch (error) {
+    logger.error('Update audit retention policy error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update retention policy',
+      error: error.message
+    });
+  }
+};
+
+const runAuditRetention = async (req, res) => {
+  try {
+    const { agencyId } = req.params;
+
+    if (req.user.Role !== 'Administrator') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only administrators can run retention cleanup'
+      });
+    }
+
+    const result = await runRetentionCleanup(agencyId);
+    if (!result.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Retention cleanup failed',
+        error: result.error || 'Unknown error'
+      });
+    }
+
+    await createAuditLog(
+      req.user.User_ID,
+      'RETENTION_CLEANUP_RUN',
+      'Audit_Retention_Policies',
+      null,
+      null,
+      {
+        agencyId: Number(agencyId),
+        skipped: result.skipped,
+        deleted: result.deleted,
+      },
+      req.ip,
+      req.get('User-Agent')
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      message: result.skipped ? 'Retention cleanup skipped' : 'Retention cleanup completed'
+    });
+  } catch (error) {
+    logger.error('Run audit retention error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to run retention cleanup',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getAuditLogs,
   getAuditLogStats,
   getActionTypes,
   getAffectedTables,
   exportAuditLogs,
-  createAuditLog
+  createAuditLog,
+  getAuditRetentionPolicy,
+  updateAuditRetentionPolicy,
+  runAuditRetention
 };

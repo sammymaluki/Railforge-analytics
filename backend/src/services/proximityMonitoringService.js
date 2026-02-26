@@ -2,6 +2,7 @@ const { logger } = require('../config/logger');
 const { getConnection, sql } = require('../config/database');
 const { emitToUser, emitToAuthority } = require('../config/socket');
 const { calculateTrackDistance } = require('../utils/geoCalculations');
+const { logAuditEvent } = require('./auditEventService');
 
 /**
  * Proximity Monitoring Service
@@ -310,9 +311,25 @@ class ProximityMonitoringService {
           milepost: auth2.Calculated_MP?.toFixed(4) || 'Unknown'
         }
       });
+      emitToUser(auth1.User_ID, 'proximity_alert', {
+        ...alert,
+        otherWorker: {
+          userId: auth2.User_ID,
+          name: auth2.Employee_Name,
+          milepost: auth2.Calculated_MP?.toFixed(4) || 'Unknown'
+        }
+      });
 
       // Send to worker 2
       emitToUser(auth2.User_ID, 'proximity-alert', {
+        ...alert,
+        otherWorker: {
+          userId: auth1.User_ID,
+          name: auth1.Employee_Name,
+          milepost: auth1.Calculated_MP?.toFixed(4) || 'Unknown'
+        }
+      });
+      emitToUser(auth2.User_ID, 'proximity_alert', {
         ...alert,
         otherWorker: {
           userId: auth1.User_ID,
@@ -324,6 +341,8 @@ class ProximityMonitoringService {
       // Broadcast to authority rooms
       emitToAuthority(auth1.Authority_ID, 'proximity-alert', alert);
       emitToAuthority(auth2.Authority_ID, 'proximity-alert', alert);
+      emitToAuthority(auth1.Authority_ID, 'proximity_alert', alert);
+      emitToAuthority(auth2.Authority_ID, 'proximity_alert', alert);
 
       // Log alert to database
       await this.logProximityAlert(auth1, auth2, distance, alertLevel);
@@ -380,6 +399,32 @@ class ProximityMonitoringService {
         .input('message2', sql.VarChar(500), `${auth1.Employee_Name} is ${distance.toFixed(2)} miles away`)
         .input('alertData', sql.NVarChar(sql.MAX), alertData)
         .query(query);
+
+      await logAuditEvent({
+        userId: auth1.User_ID,
+        actionType: 'PROXIMITY_EVENT',
+        tableName: 'Alert_Logs',
+        recordId: auth1.Authority_ID,
+        newValue: {
+          otherUserId: auth2.User_ID,
+          distanceMiles: Number(distance).toFixed(2),
+          thresholdMiles: alertLevel.threshold,
+          level: alertLevel.level,
+        },
+      });
+
+      await logAuditEvent({
+        userId: auth2.User_ID,
+        actionType: 'PROXIMITY_EVENT',
+        tableName: 'Alert_Logs',
+        recordId: auth2.Authority_ID,
+        newValue: {
+          otherUserId: auth1.User_ID,
+          distanceMiles: Number(distance).toFixed(2),
+          thresholdMiles: alertLevel.threshold,
+          level: alertLevel.level,
+        },
+      });
     } catch (error) {
       logger.error('Error logging proximity alert:', error);
     }

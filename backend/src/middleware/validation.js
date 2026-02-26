@@ -49,7 +49,8 @@ const schemas = {
 
   login: Joi.object({
     username: Joi.string().required(),
-    password: Joi.string().required()
+    password: Joi.string().required(),
+    clientType: Joi.string().valid('admin_portal', 'mobile').optional()
   }),
 
   changePassword: Joi.object({
@@ -104,6 +105,10 @@ const schemas = {
     speed: Joi.number().precision(2).min(0).allow(null),
     heading: Joi.number().precision(2).min(0).max(360).allow(null),
     accuracy: Joi.number().precision(2).min(0).allow(null),
+    timestamp: Joi.alternatives().try(Joi.date().iso(), Joi.number().integer()),
+    satelliteCount: Joi.number().integer().min(0).allow(null),
+    signalLost: Joi.boolean().optional(),
+    hasSignal: Joi.boolean().optional(),
     authorityId: Joi.number().integer().positive().required()
   }),
 

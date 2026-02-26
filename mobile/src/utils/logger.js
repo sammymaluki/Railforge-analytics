@@ -146,7 +146,7 @@ class Logger {
    */
   async exportLogs() {
     const logs = await this.getLogs();
-    let exportText = '=== Sidekick - Debug Logs ===\n';
+    let exportText = '=== RailForge Analytics - Debug Logs ===\n';
     exportText += `Generated: ${new Date().toISOString()}\n`;
     exportText += `Total Entries: ${logs.length}\n\n`;
 

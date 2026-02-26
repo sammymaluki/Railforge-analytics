@@ -36,5 +36,9 @@ router.post('/milepost-geometry', authorize('Administrator'), memoryUpload.singl
 // Download templates
 router.get('/templates/track-data', authorize('Administrator'), uploadController.downloadTrackTemplate);
 router.get('/templates/milepost-geometry', authorize('Administrator'), uploadController.downloadMilepostTemplate);
+router.get('/templates/users', authorize('Administrator'), uploadController.downloadUsersTemplate);
+
+// User upload (Admin only)
+router.post('/users', authorize('Administrator'), memoryUpload.single('file'), uploadController.uploadUsers);
 
 module.exports = router;

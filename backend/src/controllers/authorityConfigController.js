@@ -1,4 +1,32 @@
 const { logger } = require('../config/logger');
+const {
+  getDefaultFieldConfigurations,
+  getFieldConfigurations,
+  setFieldConfigurations,
+  getValidationRules
+} = require('../services/agencyConfigService');
+const { canAccessAgency } = require('../utils/rbac');
+
+const isPlainObject = (value) =>
+  Boolean(value) &&
+  typeof value === 'object' &&
+  !Array.isArray(value);
+
+const deepMerge = (base, incoming) => {
+  if (!isPlainObject(base) || !isPlainObject(incoming)) {
+    return incoming;
+  }
+
+  const merged = { ...base };
+  Object.keys(incoming).forEach((key) => {
+    if (isPlainObject(incoming[key]) && isPlainObject(base[key])) {
+      merged[key] = deepMerge(base[key], incoming[key]);
+    } else {
+      merged[key] = incoming[key];
+    }
+  });
+  return merged;
+};
 
 /**
  * Get authority field configurations for an agency
@@ -7,117 +35,20 @@ const getAuthorityFieldConfigurations = async (req, res) => {
   try {
     const { agencyId } = req.params;
 
-    // Check authorization - handle both Agency_ID and agencyId field names
-    const userAgencyId = req.user.Agency_ID || req.user.agencyId;
-    if (req.user.role !== 'Administrator' && userAgencyId !== parseInt(agencyId)) {
+    // Check authorization using normalized auth middleware user shape.
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
       });
     }
 
-    // Default field configurations
-    const defaultFields = {
-      authorityType: {
-        label: 'Authority Type',
-        required: true,
-        enabled: true,
-        options: [
-          'Foul Time',
-          'Maintenance Window',
-          'Emergency Work',
-          'Inspection',
-          'Construction',
-          'Signal Work',
-          'Track Work',
-          'Other'
-        ]
-      },
-      subdivision: {
-        label: 'Subdivision',
-        required: true,
-        enabled: true
-      },
-      beginMP: {
-        label: 'Begin Milepost',
-        required: true,
-        enabled: true,
-        format: 'decimal',
-        minValue: 0
-      },
-      endMP: {
-        label: 'End Milepost',
-        required: true,
-        enabled: true,
-        format: 'decimal',
-        minValue: 0
-      },
-      trackType: {
-        label: 'Track Type',
-        required: true,
-        enabled: true,
-        options: ['Main', 'Siding', 'Yard', 'Industrial', 'Other']
-      },
-      trackNumber: {
-        label: 'Track Number',
-        required: true,
-        enabled: true,
-        format: 'text'
-      },
-      employeeName: {
-        label: 'Employee Name',
-        required: false,
-        enabled: true,
-        format: 'text'
-      },
-      employeeContact: {
-        label: 'Employee Contact',
-        required: false,
-        enabled: true,
-        format: 'phone'
-      },
-      expirationTime: {
-        label: 'Expiration Time',
-        required: false,
-        enabled: true,
-        format: 'datetime'
-      },
-      notes: {
-        label: 'Notes',
-        required: false,
-        enabled: true,
-        format: 'textarea',
-        maxLength: 1000
-      },
-      equipment: {
-        label: 'Equipment',
-        required: false,
-        enabled: false,
-        format: 'text'
-      },
-      workDescription: {
-        label: 'Work Description',
-        required: false,
-        enabled: false,
-        format: 'textarea',
-        maxLength: 500
-      },
-      speedRestriction: {
-        label: 'Speed Restriction (MPH)',
-        required: false,
-        enabled: false,
-        format: 'number',
-        minValue: 0,
-        maxValue: 150
-      }
-    };
+    const fieldConfigurations = getFieldConfigurations(agencyId);
 
-    // In a production system, this would be stored in the database
-    // For now, we return the default configuration
     res.json({
       success: true,
       data: {
-        fieldConfigurations: defaultFields,
+        fieldConfigurations,
         customFields: []
       }
     });
@@ -140,7 +71,7 @@ const updateAuthorityFieldConfigurations = async (req, res) => {
     const { fieldConfigurations } = req.body;
 
     // Only administrators can update field configurations
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can update field configurations'
@@ -165,14 +96,28 @@ const updateAuthorityFieldConfigurations = async (req, res) => {
       }
     }
 
-    // In production, this would save to a database table
-    // For now, we'll log the update and return success
-    logger.info(`Authority field configurations updated for agency ${agencyId} by user ${req.user.userId}`);
+    const defaultFieldConfigurations = getDefaultFieldConfigurations();
+    const mergedFieldConfigurations = { ...defaultFieldConfigurations };
+
+    Object.keys(fieldConfigurations).forEach((key) => {
+      const incomingValue = fieldConfigurations[key];
+      const defaultValue = defaultFieldConfigurations[key];
+
+      if (isPlainObject(incomingValue) && isPlainObject(defaultValue)) {
+        mergedFieldConfigurations[key] = deepMerge(defaultValue, incomingValue);
+      } else {
+        mergedFieldConfigurations[key] = incomingValue;
+      }
+    });
+
+    setFieldConfigurations(agencyId, mergedFieldConfigurations);
+
+    logger.info(`Authority field configurations updated for agency ${agencyId} by user ${req.user.User_ID}`);
 
     res.json({
       success: true,
       data: {
-        fieldConfigurations
+        fieldConfigurations: mergedFieldConfigurations
       },
       message: 'Field configurations updated successfully'
     });
@@ -194,7 +139,7 @@ const getAuthorityTypeOptions = async (req, res) => {
     const { agencyId } = req.params;
 
     // Check authorization
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -237,7 +182,7 @@ const addAuthorityTypeOption = async (req, res) => {
     const { value, label, color } = req.body;
 
     // Only administrators can add authority types
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can add authority types'
@@ -261,7 +206,7 @@ const addAuthorityTypeOption = async (req, res) => {
     }
 
     // In production, this would be saved to database
-    logger.info(`Authority type added for agency ${agencyId}: ${value} by user ${req.user.userId}`);
+    logger.info(`Authority type added for agency ${agencyId}: ${value} by user ${req.user.User_ID}`);
 
     res.status(201).json({
       success: true,
@@ -288,52 +233,14 @@ const getAuthorityValidationRules = async (req, res) => {
     const { agencyId } = req.params;
 
     // Check authorization
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
       });
     }
 
-    const validationRules = {
-      beginMP: {
-        type: 'number',
-        min: 0,
-        max: 9999.99,
-        decimalPlaces: 2,
-        required: true
-      },
-      endMP: {
-        type: 'number',
-        min: 0,
-        max: 9999.99,
-        decimalPlaces: 2,
-        required: true,
-        validation: 'must be greater than Begin MP'
-      },
-      trackNumber: {
-        type: 'string',
-        maxLength: 10,
-        pattern: '^[A-Za-z0-9-]+$',
-        required: true
-      },
-      employeeContact: {
-        type: 'string',
-        pattern: '^[0-9]{3}-[0-9]{3}-[0-9]{4}$',
-        format: 'phone',
-        example: '555-123-4567'
-      },
-      speedRestriction: {
-        type: 'number',
-        min: 0,
-        max: 150,
-        unit: 'MPH'
-      },
-      expirationTime: {
-        type: 'datetime',
-        validation: 'must be in the future'
-      }
-    };
+    const validationRules = getValidationRules(agencyId);
 
     res.json({
       success: true,

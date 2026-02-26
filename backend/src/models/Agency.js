@@ -9,19 +9,24 @@ class Agency extends BaseModel {
     const offset = (page - 1) * limit;
     
     let query = `
-      SELECT * FROM Agencies
-      WHERE Is_Active = 1
+      SELECT 
+        a.*,
+        COUNT(u.User_ID) as userCount
+      FROM Agencies a
+      LEFT JOIN Users u ON a.Agency_ID = u.Agency_ID
+      WHERE a.Is_Active = 1
     `;
     
     const params = {};
     
     if (search) {
-      query += ' AND (Agency_CD LIKE @search OR Agency_Name LIKE @search)';
+      query += ' AND (a.Agency_CD LIKE @search OR a.Agency_Name LIKE @search)';
       params.search = `%${search}%`;
     }
     
     query += `
-      ORDER BY Agency_Name
+      GROUP BY a.Agency_ID, a.Agency_CD, a.Agency_Name, a.Region, a.Contact_Email, a.Contact_Phone, a.Is_Active, a.Created_Date, a.Modified_Date
+      ORDER BY a.Agency_Name
       OFFSET @offset ROWS
       FETCH NEXT @limit ROWS ONLY
     `;
@@ -32,9 +37,9 @@ class Agency extends BaseModel {
     const result = await this.executeQuery(query, params);
     
     // Get total count
-    let countQuery = 'SELECT COUNT(*) as total FROM Agencies WHERE Is_Active = 1';
+    let countQuery = 'SELECT COUNT(DISTINCT a.Agency_ID) as total FROM Agencies a WHERE a.Is_Active = 1';
     if (search) {
-      countQuery += ' AND (Agency_CD LIKE @search OR Agency_Name LIKE @search)';
+      countQuery += ' AND (a.Agency_CD LIKE @search OR a.Agency_Name LIKE @search)';
     }
     
     const countResult = await this.executeQuery(countQuery, search ? { search: `%${search}%` } : {});

@@ -4,7 +4,7 @@ const fs = require('fs');
 const { logger } = require('./logger');
 
 // Ensure upload directory exists
-const uploadDir = process.env.UPLOAD_PATH || './public/uploads';
+const uploadDir = path.resolve(process.env.UPLOAD_PATH || './public/uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -98,10 +98,31 @@ const handleUploadError = (err, req, res, next) => {
 
 // Helper function to get public URL
 const getPublicUrl = (filePath) => {
-  if (!filePath) {return null;}
-  
-  const relativePath = filePath.replace(uploadDir, '').replace(/\\/g, '/');
-  return `/uploads${relativePath}`;
+  if (!filePath) {
+    return null;
+  }
+
+  const normalizedPath = String(filePath).replace(/\\/g, '/').trim();
+  const normalizedUploadDir = String(uploadDir).replace(/\\/g, '/').trim();
+
+  // Preferred: extract segment after /public/uploads/ (case-insensitive)
+  const publicMarkerMatch = normalizedPath.match(/public\/uploads\/(.+)$/i);
+  if (publicMarkerMatch?.[1]) {
+    return `/uploads/${publicMarkerMatch[1].replace(/^\/+/, '')}`;
+  }
+
+  // Fallback: extract relative path from configured upload dir, case-insensitive.
+  const lowerPath = normalizedPath.toLowerCase();
+  const lowerUploadDir = normalizedUploadDir.toLowerCase();
+  const dirIndex = lowerPath.indexOf(lowerUploadDir);
+  if (dirIndex !== -1) {
+    const relative = normalizedPath.slice(dirIndex + normalizedUploadDir.length).replace(/^\/+/, '');
+    return `/uploads/${relative}`;
+  }
+
+  // Last resort: keep only filename.
+  const filename = normalizedPath.split('/').filter(Boolean).pop();
+  return filename ? `/uploads/${filename}` : null;
 };
 
 module.exports = {

@@ -255,6 +255,7 @@ class MapLayerController {
               .input('agencyId', sql.Int, agencyId)
               .input('subdivisionId', sql.Int, subdivisionId)
               .input('limit', sql.Int, limit)
+              .input('q', sql.NVarChar, query)
               .input('qLike', sql.NVarChar, queryLike),
             `
             SELECT TOP (@limit)
@@ -280,7 +281,10 @@ class MapLayerController {
                 t.Asset_SubType LIKE @qLike OR
                 t.Track_Type LIKE @qLike OR
                 t.Track_Number LIKE @qLike OR
-                t.LS LIKE @qLike
+                t.LS LIKE @qLike OR
+                DIFFERENCE(ISNULL(t.Asset_Name, ''), @q) >= 3 OR
+                DIFFERENCE(ISNULL(t.Asset_Type, ''), @q) >= 3 OR
+                DIFFERENCE(ISNULL(t.Asset_SubType, ''), @q) >= 3
               )
             ORDER BY t.Track_ID
           `,
@@ -306,6 +310,7 @@ class MapLayerController {
               .input('agencyId', sql.Int, agencyId)
               .input('subdivisionId', sql.Int, subdivisionId)
               .input('limit', sql.Int, limit)
+              .input('q', sql.NVarChar, query)
               .input('qLike', sql.NVarChar, queryLike),
             `
             SELECT TOP (@limit)
@@ -324,7 +329,9 @@ class MapLayerController {
               AND (
                 CONVERT(VARCHAR(20), mg.MP) LIKE @qLike OR
                 ISNULL(s.Subdivision_Code, '') LIKE @qLike OR
-                ISNULL(s.Subdivision_Name, '') LIKE @qLike
+                ISNULL(s.Subdivision_Name, '') LIKE @qLike OR
+                DIFFERENCE(ISNULL(s.Subdivision_Code, ''), @q) >= 3 OR
+                DIFFERENCE(ISNULL(s.Subdivision_Name, ''), @q) >= 3
               )
             ORDER BY mg.MP
           `,
@@ -357,6 +364,7 @@ class MapLayerController {
                 .input('agencyId', sql.Int, agencyId)
                 .input('subdivisionId', sql.Int, subdivisionId)
                 .input('limit', sql.Int, limit)
+                .input('q', sql.NVarChar, query)
                 .input('qLike', sql.NVarChar, queryLike);
               (layer.aliases || []).forEach((alias, index) => {
                 retryRequest.input(`alias${index}`, sql.NVarChar, alias.toUpperCase());
@@ -388,7 +396,10 @@ class MapLayerController {
                 t.Asset_SubType LIKE @qLike OR
                 t.Track_Type LIKE @qLike OR
                 t.Track_Number LIKE @qLike OR
-                s.Subdivision_Code LIKE @qLike
+                s.Subdivision_Code LIKE @qLike OR
+                DIFFERENCE(ISNULL(t.Asset_Name, ''), @q) >= 3 OR
+                DIFFERENCE(ISNULL(t.Asset_Type, ''), @q) >= 3 OR
+                DIFFERENCE(ISNULL(t.Asset_SubType, ''), @q) >= 3
               )
             ORDER BY t.Track_ID
           `,
@@ -623,6 +634,112 @@ class MapLayerController {
       res.status(500).json({
         success: false,
         error: 'Failed to load layer data',
+        ...(process.env.NODE_ENV === 'development' && { details: error.message }),
+      });
+    }
+  }
+
+  async getAuthorityBoundary(req, res) {
+    try {
+      const agencyId = req.user.Agency_ID;
+      const authorityId = parseFloat(req.params.authorityId);
+
+      if (!Number.isFinite(authorityId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid authority ID',
+        });
+      }
+
+      // Get authority with matching mileposts for boundary coordinates
+      const result = await queryWithRetry(
+        (pool) => pool.request()
+          .input('authorityId', sql.Float, authorityId)
+          .input('agencyId', sql.Int, agencyId),
+        `
+          SELECT 
+            a.Authority_ID,
+            a.Subdivision_ID,
+            a.Begin_MP,
+            a.End_MP,
+            a.Track_Type,
+            a.Track_Number,
+            a.Authority_Type,
+            s.Subdivision_Name,
+            -- Get begin point coordinates from milepost closest to Begin_MP
+            (SELECT TOP 1 Latitude FROM Milepost_Geometry 
+             WHERE Subdivision_ID = a.Subdivision_ID 
+             AND MP >= a.Begin_MP
+             ORDER BY ABS(MP - a.Begin_MP)) as Begin_Lat,
+            (SELECT TOP 1 Longitude FROM Milepost_Geometry 
+             WHERE Subdivision_ID = a.Subdivision_ID 
+             AND MP >= a.Begin_MP
+             ORDER BY ABS(MP - a.Begin_MP)) as Begin_Lng,
+            -- Get end point coordinates from milepost closest to End_MP
+            (SELECT TOP 1 Latitude FROM Milepost_Geometry 
+             WHERE Subdivision_ID = a.Subdivision_ID 
+             AND MP <= a.End_MP
+             ORDER BY ABS(MP - a.End_MP)) as End_Lat,
+            (SELECT TOP 1 Longitude FROM Milepost_Geometry 
+             WHERE Subdivision_ID = a.Subdivision_ID 
+             AND MP <= a.End_MP
+             ORDER BY ABS(MP - a.End_MP)) as End_Lng
+          FROM Authorities a
+          INNER JOIN Subdivisions s ON a.Subdivision_ID = s.Subdivision_ID
+          WHERE a.Authority_ID = @authorityId
+            AND s.Agency_ID = @agencyId
+            AND a.Is_Active = 1
+        `,
+        'getAuthorityBoundary'
+      );
+
+      if (!result.recordset.length) {
+        return res.status(404).json({
+          success: false,
+          error: 'Authority not found or not accessible',
+        });
+      }
+
+      const boundary = result.recordset[0];
+
+      // Validate we have coordinates
+      if (!boundary.Begin_Lat || !boundary.Begin_Lng || !boundary.End_Lat || !boundary.End_Lng) {
+        return res.status(404).json({
+          success: false,
+          error: 'Authority boundary coordinates not available',
+        });
+      }
+
+      // Return boundary as GeoJSON feature for map display
+      res.json({
+        success: true,
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [parseFloat(boundary.Begin_Lng), parseFloat(boundary.Begin_Lat)],
+              [parseFloat(boundary.End_Lng), parseFloat(boundary.End_Lat)],
+            ],
+          },
+          properties: {
+            authorityId: boundary.Authority_ID,
+            authorityType: boundary.Authority_Type,
+            subdivisionName: boundary.Subdivision_Name,
+            trackType: boundary.Track_Type,
+            trackNumber: boundary.Track_Number,
+            beginMP: boundary.Begin_MP,
+            endMP: boundary.End_MP,
+            beginCoordinates: `${boundary.Begin_Lat.toFixed(6)}, ${boundary.Begin_Lng.toFixed(6)}`,
+            endCoordinates: `${boundary.End_Lat.toFixed(6)}, ${boundary.End_Lng.toFixed(6)}`,
+          },
+        },
+      });
+    } catch (error) {
+      logger.error('Get authority boundary error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to load authority boundary',
         ...(process.env.NODE_ENV === 'development' && { details: error.message }),
       });
     }

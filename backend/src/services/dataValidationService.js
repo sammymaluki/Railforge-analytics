@@ -289,6 +289,28 @@ class DataValidationService {
       }
     ];
   }
+
+  /**
+   * Generate sample user import template
+   */
+  generateUsersTemplate() {
+    return [
+      {
+        Username: 'jsmith',
+        Email: 'john.smith@example.com',
+        Full_Name: 'John Smith',
+        Role: 'Field_Worker',
+        Agency_CD: 'METRLK'
+      },
+      {
+        Username: 'mjones',
+        Email: 'mary.jones@example.com',
+        Full_Name: 'Mary Jones',
+        Role: 'Supervisor',
+        Agency_CD: 'METRLK'
+      }
+    ];
+  }
 }
 
 module.exports = new DataValidationService();

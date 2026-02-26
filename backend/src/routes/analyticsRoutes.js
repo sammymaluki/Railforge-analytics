@@ -57,7 +57,7 @@ router.get('/:agencyId/trends/:metric', async (req, res) => {
     const { period = '7d' } = req.query;
 
     // Verify access
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -93,7 +93,7 @@ router.get('/:agencyId/safety-metrics', async (req, res) => {
     const { agencyId } = req.params;
 
     // Verify access
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -126,7 +126,7 @@ router.post('/:agencyId/reports/:reportType', async (req, res) => {
     const { startDate, endDate, options = {} } = req.body;
 
     // Verify access
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -164,7 +164,7 @@ router.post('/:agencyId/cache/clear', async (req, res) => {
     const { agencyId } = req.params;
 
     // Verify admin access
-    if (req.user.role !== 'Administrator' || req.user.agencyId !== parseInt(agencyId)) {
+    if (req.user.Role !== 'Administrator' || req.user.Agency_ID !== parseInt(agencyId)) {
       return res.status(403).json({
         success: false,
         message: 'Access denied - Administrator role required'

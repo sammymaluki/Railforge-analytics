@@ -32,13 +32,12 @@ import {
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDateFns } from '@mui/x-date-pickers/AdapterDateFns';
-import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { useSelector } from 'react-redux';
 
 const AuthorityHistory = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use DEFAULT agency (ID 1) for testing since admin user is in DEFAULT agency
-  const agencyId = 1;
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 1);
 
   const [authorities, setAuthorities] = useState([]);
   const [loading, setLoading] = useState(false);

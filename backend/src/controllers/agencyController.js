@@ -3,6 +3,7 @@ const User = require('../models/User');
 // Removed unused model imports (they are used via DB seeding/helpers when needed)
 const { logger } = require('../config/logger');
 const { getConnection, getConnectionWithRecovery, sql } = require('../config/database');
+const { isGlobalAdmin } = require('../utils/rbac');
 
 const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,6 +55,20 @@ class AgencyController {
   async getAllAgencies(req, res) {
     try {
       const { page = 1, limit = 20, search = '' } = req.query;
+
+      if (!isGlobalAdmin(req.user)) {
+        const agency = await Agency.findById(req.user.Agency_ID);
+        return res.json({
+          success: true,
+          data: {
+            agencies: agency ? [agency] : [],
+            total: agency ? 1 : 0,
+            page: 1,
+            limit: 1,
+            totalPages: agency ? 1 : 0
+          }
+        });
+      }
       
       const result = await Agency.findAll({
         page: parseInt(page),

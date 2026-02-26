@@ -22,7 +22,6 @@ import {
   CloudUpload as UploadIcon,
   Download as DownloadIcon,
   Description as FileIcon,
-  CheckCircle as SuccessIcon,
   Error as ErrorIcon,
   Info as InfoIcon,
   Warning as WarningIcon

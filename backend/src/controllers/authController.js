@@ -1,7 +1,26 @@
 const User = require('../models/User');
+const Agency = require('../models/Agency');
 const { generateToken } = require('../middleware/auth');
 const { logger } = require('../config/logger');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const { logAuditEvent, startUserSession, endUserSession } = require('../services/auditEventService');
+const { getAdminScope, hasAdminPortalAccess, isGlobalAdmin } = require('../utils/rbac');
+
+const buildAuthUserPayload = (user) => ({
+  User_ID: user.User_ID,
+  Username: user.Username,
+  Employee_Name: user.Employee_Name,
+  Employee_Contact: user.Employee_Contact,
+  Email: user.Email,
+  Role: user.Role,
+  Agency_ID: user.Agency_ID,
+  Agency_CD: user.Agency_CD,
+  Agency_Name: user.Agency_Name,
+  Is_Global_Admin: isGlobalAdmin(user),
+  Admin_Scope: getAdminScope(user),
+  Can_Access_Admin_Portal: hasAdminPortalAccess(user),
+});
 
 class AuthController {
   async register(req, res) {
@@ -15,12 +34,30 @@ class AuthController {
         role = 'Field_Worker',
         agencyId
       } = req.body;
+      const requestedRole = role;
 
       // Validation
       if (!username || !password || !employeeName || !agencyId) {
         return res.status(400).json({
           success: false,
           error: 'Username, password, employee name, and agency are required'
+        });
+      }
+
+      // Public self-registration cannot create administrator accounts.
+      if (requestedRole === 'Administrator') {
+        return res.status(403).json({
+          success: false,
+          error: 'Administrator accounts must be created by an existing administrator'
+        });
+      }
+
+      // Ensure agency exists and is active.
+      const agency = await Agency.findById(agencyId);
+      if (!agency) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid agency'
         });
       }
 
@@ -41,7 +78,7 @@ class AuthController {
         employeeName,
         employeeContact,
         email,
-        role
+        role: requestedRole
       };
 
       const user = await User.create(userData);
@@ -54,21 +91,24 @@ class AuthController {
 
       // Log the registration
       logger.info(`New user registered: ${username} (${employeeName})`);
+      await logAuditEvent({
+        userId: user.User_ID,
+        actionType: 'CREATE_ACCOUNT',
+        tableName: 'Users',
+        recordId: user.User_ID,
+        newValue: {
+          Username: user.Username,
+          Role: user.Role,
+          Agency_ID: user.Agency_ID,
+        },
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
 
       res.status(201).json({
         success: true,
         data: {
-          user: {
-            User_ID: user.User_ID,
-            Username: user.Username,
-            Employee_Name: user.Employee_Name,
-            Employee_Contact: user.Employee_Contact,
-            Email: user.Email,
-            Role: user.Role,
-            Agency_ID: user.Agency_ID,
-            Agency_CD: user.Agency_CD,
-            Agency_Name: user.Agency_Name
-          },
+          user: buildAuthUserPayload(user),
           token
         }
       });
@@ -83,7 +123,7 @@ class AuthController {
 
   async login(req, res) {
     try {
-      const { username, password } = req.body;
+      const { username, password, clientType } = req.body;
 
       if (!username || !password) {
         return res.status(400).json({
@@ -120,29 +160,59 @@ class AuthController {
         });
       }
 
+      const isAdminPortalClient = String(clientType || '').toLowerCase() === 'admin_portal';
+      if (isAdminPortalClient && !hasAdminPortalAccess(user)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied. This account cannot access the admin portal.'
+        });
+      }
+
       // Generate token
       const token = generateToken(user);
+      const sessionId = crypto.randomUUID();
 
       // Update last login
       await User.updateLastLogin(user.User_ID);
 
       // Log the login
       logger.info(`User logged in: ${username} from IP: ${req.ip}`);
+      await startUserSession({
+        sessionId,
+        userId: user.User_ID,
+        agencyId: user.Agency_ID,
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+        token,
+      });
+      await logAuditEvent({
+        userId: user.User_ID,
+        actionType: 'USER_SESSION_START',
+        tableName: 'User_Sessions',
+        newValue: {
+          sessionId,
+          username: user.Username,
+          role: user.Role,
+        },
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
+      await logAuditEvent({
+        userId: user.User_ID,
+        actionType: 'LOGIN',
+        tableName: 'Users',
+        recordId: user.User_ID,
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
 
       res.json({
         success: true,
         data: {
           user: {
-            User_ID: user.User_ID,
-            Username: user.Username,
-            Employee_Name: user.Employee_Name,
-            Employee_Contact: user.Employee_Contact,
-            Email: user.Email,
-            Role: user.Role,
-            Agency_ID: user.Agency_ID,
-            Agency_CD: user.Agency_CD,
-            Agency_Name: user.Agency_Name,
-            Last_Login: user.Last_Login
+            ...buildAuthUserPayload(user),
+            Last_Login: user.Last_Login,
+            Session_ID: sessionId
           },
           token
         }
@@ -161,6 +231,25 @@ class AuthController {
       // In a stateless JWT system, we can't invalidate tokens server-side
       // Clients should delete the token on their side
       // We could implement a token blacklist if needed
+      await endUserSession({ userId: req.user.User_ID });
+      await logAuditEvent({
+        userId: req.user.User_ID,
+        actionType: 'USER_SESSION_END',
+        tableName: 'User_Sessions',
+        newValue: {
+          username: req.user.Username,
+        },
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
+      await logAuditEvent({
+        userId: req.user.User_ID,
+        actionType: 'LOGOUT',
+        tableName: 'Users',
+        recordId: req.user.User_ID,
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
       
       logger.info(`User logged out: ${req.user.Username} (${req.user.Employee_Name})`);
       
@@ -185,15 +274,7 @@ class AuthController {
         success: true,
         data: {
           user: {
-            User_ID: user.User_ID,
-            Username: user.Username,
-            Employee_Name: user.Employee_Name,
-            Employee_Contact: user.Employee_Contact,
-            Email: user.Email,
-            Role: user.Role,
-            Agency_ID: user.Agency_ID,
-            Agency_CD: user.Agency_CD,
-            Agency_Name: user.Agency_Name,
+            ...buildAuthUserPayload(user),
             Is_Active: user.Is_Active,
             Last_Login: user.Last_Login,
             Created_Date: user.Created_Date
@@ -211,8 +292,29 @@ class AuthController {
 
   async updateProfile(req, res) {
     try {
-      const { userId } = req.user;
-      const updateData = req.body;
+      const userId = req.user.User_ID;
+      const updateData = {};
+
+      // Map camelCase request fields to database column names.
+      if (req.body.employeeName !== undefined) {
+        updateData.Employee_Name = req.body.employeeName;
+      }
+      if (req.body.employeeContact !== undefined) {
+        updateData.Employee_Contact = req.body.employeeContact;
+      }
+      if (req.body.email !== undefined) {
+        updateData.Email = req.body.email;
+      }
+      if (req.body.isActive !== undefined) {
+        updateData.Is_Active = req.body.isActive;
+      }
+
+      if (Object.keys(updateData).length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'No valid profile fields were provided'
+        });
+      }
 
       // Remove fields that shouldn't be updated via profile
       delete updateData.Password_Hash;
@@ -305,17 +407,7 @@ class AuthController {
       res.json({
         success: true,
         data: {
-          user: {
-            User_ID: user.User_ID,
-            Username: user.Username,
-            Employee_Name: user.Employee_Name,
-            Employee_Contact: user.Employee_Contact,
-            Email: user.Email,
-            Role: user.Role,
-            Agency_ID: user.Agency_ID,
-            Agency_CD: user.Agency_CD,
-            Agency_Name: user.Agency_Name
-          }
+          user: buildAuthUserPayload(user)
         }
       });
     } catch (error) {
@@ -323,6 +415,31 @@ class AuthController {
       res.status(401).json({
         success: false,
         error: 'Invalid token'
+      });
+    }
+  }
+
+  async getRegistrationOptions(req, res) {
+    try {
+      const agencyResponse = await Agency.findAll({ page: 1, limit: 500, search: '' });
+      const agencies = (agencyResponse.agencies || []).map((agency) => ({
+        Agency_ID: agency.Agency_ID,
+        Agency_CD: agency.Agency_CD,
+        Agency_Name: agency.Agency_Name
+      }));
+
+      res.json({
+        success: true,
+        data: {
+          agencies,
+          roles: ['Field_Worker', 'Supervisor', 'Viewer']
+        }
+      });
+    } catch (error) {
+      logger.error('Get registration options error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to load registration options'
       });
     }
   }

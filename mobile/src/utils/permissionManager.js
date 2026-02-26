@@ -49,7 +49,7 @@ class PermissionManager {
       // Show explanation before requesting
       const shouldRequest = await this.showPermissionExplanation({
         title: 'Location Permission Required',
-        message: 'Sidekick needs access to your location to:\n\n' +
+        message: 'RailForge Analytics needs access to your location to:\n\n' +
                  '• Track your position on railroad tracks\n' +
                  '• Alert you when approaching authority limits\n' +
                  '• Warn you about nearby workers\n' +
@@ -95,7 +95,7 @@ class PermissionManager {
       const explanation = Platform.select({
         ios: {
           title: 'Background Location for Safety',
-          message: 'For your safety, Sidekick needs to track your location even when the app is in the background or locked.\n\n' +
+          message: 'For your safety, RailForge Analytics needs to track your location even when the app is in the background or locked.\n\n' +
                    '⚠️ IMPORTANT FOR iOS:\n' +
                    '• Tap "Allow" on the next screen\n' +
                    '• Then tap "Change to Always Allow"\n\n' +
@@ -108,7 +108,7 @@ class PermissionManager {
         },
         android: {
           title: 'Allow All the Time Location',
-          message: 'Sidekick needs location access "All the time" to:\n\n' +
+          message: 'RailForge Analytics needs location access "All the time" to:\n\n' +
                    '• Track your position while app is in background\n' +
                    '• Send safety alerts even when screen is off\n' +
                    '• Ensure continuous protection\n\n' +
@@ -164,7 +164,7 @@ class PermissionManager {
 
       const shouldRequest = await this.showPermissionExplanation({
         title: 'Notifications for Safety Alerts',
-        message: 'Sidekick needs notification permission to:\n\n' +
+        message: 'RailForge Analytics needs notification permission to:\n\n' +
                  '• Alert you when approaching track limits\n' +
                  '• Warn you about nearby workers\n' +
                  '• Notify you of overlapping authorities\n\n' +
@@ -202,7 +202,7 @@ class PermissionManager {
 
       const shouldRequest = await this.showPermissionExplanation({
         title: 'Camera Access for Photos',
-        message: 'Sidekick needs camera access to:\n\n' +
+        message: 'RailForge Analytics needs camera access to:\n\n' +
                  '• Take photos for pin drops\n' +
                  '• Document track conditions\n' +
                  '• Attach images to reports\n\n' +
@@ -240,7 +240,7 @@ class PermissionManager {
 
       const shouldRequest = await this.showPermissionExplanation({
         title: 'Photo Library Access',
-        message: 'Sidekick needs photo library access to:\n\n' +
+        message: 'RailForge Analytics needs photo library access to:\n\n' +
                  '• Attach existing photos to pin drops\n' +
                  '• Include images in reports\n\n' +
                  'This permission is optional.',
@@ -296,7 +296,7 @@ class PermissionManager {
       'For full safety coverage, you need to enable "Always" location access.\n\n' +
       'To fix this:\n' +
       '1. Open Settings\n' +
-      '2. Go to Sidekick\n' +
+      '2. Go to RailForge Analytics\n' +
       '3. Tap Location\n' +
       '4. Select "Always"\n\n' +
       'Would you like to open Settings now?',

@@ -75,6 +75,7 @@ const AlertHistory = () => {
 
       if (filters.alertType === 'all') queryParams.delete('alertType');
       if (filters.alertLevel === 'all') queryParams.delete('alertLevel');
+      if (!filters.userId || filters.userId === '') queryParams.delete('userId');
 
       const response = await api.get(`/alerts/${agencyId}/history?${queryParams.toString()}`);
       
@@ -165,7 +166,7 @@ const AlertHistory = () => {
   };
 
   const getAlertTypeLocation = (alert) => {
-    // For alerts without GPS coordinates, show a descriptive location based on alert type
+    // For proximity and boundary alerts, show the descriptive location
     if (alert.Alert_Type === 'Overlap_Detected') {
       return 'Track Overlap Area';
     } else if (alert.Alert_Type === 'Proximity') {
@@ -175,7 +176,22 @@ const AlertHistory = () => {
     } else if (alert.Alert_Type === 'Boundary_Approach') {
       return 'Approaching Boundary';
     }
+    // For system alerts, show the alert reason from the message
+    if (alert.Alert_Type === 'Location_Unreliable') {
+      return 'Location Unreliable';
+    } else if (alert.Alert_Type === 'GPS_Signal_Lost') {
+      return 'Signal Lost';
+    } else if (alert.Alert_Type === 'GPS_Accuracy') {
+      return 'Accuracy Issue';
+    } else if (alert.Alert_Type === 'GPS_Stale') {
+      return 'Stale Signal';
+    }
     return 'N/A';
+  };
+
+  const shouldShowDistance = (alertType) => {
+    // Only show distance for proximity and boundary alerts
+    return ['Proximity', 'Boundary_Exit', 'Boundary_Approach', 'Overlap_Detected'].includes(alertType);
   };
 
   return (
@@ -391,9 +407,11 @@ const AlertHistory = () => {
                     {getAlertTypeLocation(alert)}
                   </TableCell>
                   <TableCell>
-                    {alert.Triggered_Distance 
-                      ? `${alert.Triggered_Distance} mi`
-                      : 'N/A'}
+                    {shouldShowDistance(alert.Alert_Type)
+                      ? alert.Triggered_Distance 
+                        ? `${alert.Triggered_Distance} mi`
+                        : 'N/A'
+                      : '-'}
                   </TableCell>
                   <TableCell>
                     <Chip

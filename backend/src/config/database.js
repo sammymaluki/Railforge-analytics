@@ -1,5 +1,14 @@
 const sql = require('mssql');
 
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
+
+const isProduction = process.env.NODE_ENV === 'production';
+const encryptConnection = parseBoolean(process.env.DB_ENCRYPT, isProduction);
+const trustServerCertificate = parseBoolean(process.env.DB_TRUST_SERVER_CERT, !isProduction);
+
 const dbConfig = {
   server: process.env.DB_HOST || 'localhost',
   database: process.env.DB_NAME || 'HerzogRailAuthority',
@@ -7,8 +16,8 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || '',
   port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
-    encrypt: false, // Use true for Azure
-    trustServerCertificate: true, // For self-signed certificates
+    encrypt: encryptConnection,
+    trustServerCertificate,
     enableArithAbort: true,
     connectTimeout: 30000,
     requestTimeout: 30000,

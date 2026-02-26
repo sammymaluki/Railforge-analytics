@@ -6,6 +6,9 @@ const { auth } = require('../middleware/auth');
 // Get milepost reference data for subdivision
 router.get('/mileposts/:subdivisionId', auth, trackController.getMileposts);
 
+// Get structured track-search options for subdivision
+router.get('/search-options', auth, trackController.getTrackSearchOptions);
+
 // Calculate track-based distance between two GPS coordinates
 router.post('/calculate-distance', auth, trackController.calculateDistance);
 

@@ -291,16 +291,42 @@ const TestAlerts = () => {
                   Delivery Methods:
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-                  {formData.includeEmail && (
-                    <Typography variant="body2" sx={{ px: 1.5, py: 0.5, bgcolor: '#FFD100', color: '#000', borderRadius: 1 }}>
-                      Email
-                    </Typography>
-                  )}
-                  {formData.includePush && (
-                    <Typography variant="body2" sx={{ px: 1.5, py: 0.5, bgcolor: '#FFD100', color: '#000', borderRadius: 1 }}>
-                      Push Notification
-                    </Typography>
-                  )}
+                  <Button
+                    size="small"
+                    variant={formData.includeEmail ? 'contained' : 'outlined'}
+                    onClick={() => setFormData((prev) => ({ ...prev, includeEmail: !prev.includeEmail }))}
+                    sx={{
+                      minWidth: 0,
+                      px: 1.5,
+                      bgcolor: formData.includeEmail ? '#FFD100' : 'transparent',
+                      color: formData.includeEmail ? '#000' : '#FFD100',
+                      borderColor: '#FFD100',
+                      '&:hover': {
+                        bgcolor: formData.includeEmail ? '#E6BC00' : 'rgba(255, 209, 0, 0.12)',
+                        borderColor: '#FFD100'
+                      }
+                    }}
+                  >
+                    Email
+                  </Button>
+                  <Button
+                    size="small"
+                    variant={formData.includePush ? 'contained' : 'outlined'}
+                    onClick={() => setFormData((prev) => ({ ...prev, includePush: !prev.includePush }))}
+                    sx={{
+                      minWidth: 0,
+                      px: 1.5,
+                      bgcolor: formData.includePush ? '#FFD100' : 'transparent',
+                      color: formData.includePush ? '#000' : '#FFD100',
+                      borderColor: '#FFD100',
+                      '&:hover': {
+                        bgcolor: formData.includePush ? '#E6BC00' : 'rgba(255, 209, 0, 0.12)',
+                        borderColor: '#FFD100'
+                      }
+                    }}
+                  >
+                    Push Notification
+                  </Button>
                 </Box>
               </Box>
             </CardContent>

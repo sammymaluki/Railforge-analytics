@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Paper,
@@ -32,8 +32,7 @@ import {
   Add as AddIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
-  Refresh as RefreshIcon,
-  ColorLens as ColorIcon
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import { useSelector } from 'react-redux';
 import api from '../../services/api';
@@ -61,11 +60,7 @@ const PinCategories = () => {
     sortOrder: 1
   });
 
-  useEffect(() => {
-    loadPinTypes();
-  }, []);
-
-  const loadPinTypes = async () => {
+  const loadPinTypes = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -97,7 +92,11 @@ const PinCategories = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [agencyId]);
+
+  useEffect(() => {
+    loadPinTypes();
+  }, [loadPinTypes]);
 
   const handleOpenDialog = (pin = null) => {
     if (pin) {

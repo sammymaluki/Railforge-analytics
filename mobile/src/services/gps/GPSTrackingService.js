@@ -2,11 +2,13 @@
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { Platform, Alert, Linking } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { store } from '../../store/store';
 import { updatePosition, updateTrackingInfo, startTracking, stopTracking } from '../../store/slices/gpsSlice';
 import databaseService from '../database/DatabaseService';
 import socketService from '../socket/SocketService';
 import apiService from '../api/ApiService';
+import syncService from '../sync/SyncService';
 import { CONFIG } from '../../constants/config';
 import permissionManager from '../../utils/permissionManager';
 import logger from '../../utils/logger';
@@ -15,9 +17,71 @@ import { globalGPSSmoother } from '../../utils/gpsSmoother';
 const GPS_TASK_NAME = 'herzog-gps-tracking';
 const GPS_BACKEND_MIN_SEND_INTERVAL_MS = 3000;
 const GPS_BACKEND_MIN_MOVE_METERS = 12;
+const GPS_DEGRADED_SIGNAL_ALERT_INTERVAL_MS = 60000;
+const GPS_ADAPTIVE_RECONFIGURE_INTERVAL_MS = 15000;
+
+const GPS_ADAPTIVE_PROFILES = {
+  excellent: {
+    accuracyMode: Location.Accuracy.BestForNavigation,
+    timeInterval: 2500,
+    distanceInterval: 5,
+    backendMinIntervalMs: 2500,
+    backendMinMoveMeters: 6,
+  },
+  good: {
+    accuracyMode: Location.Accuracy.High,
+    timeInterval: 5000,
+    distanceInterval: 8,
+    backendMinIntervalMs: 3500,
+    backendMinMoveMeters: 10,
+  },
+  fair: {
+    accuracyMode: Location.Accuracy.Balanced,
+    timeInterval: 8000,
+    distanceInterval: 12,
+    backendMinIntervalMs: 5000,
+    backendMinMoveMeters: 14,
+  },
+  poor: {
+    accuracyMode: Location.Accuracy.Balanced,
+    timeInterval: 15000,
+    distanceInterval: 25,
+    backendMinIntervalMs: 8000,
+    backendMinMoveMeters: 20,
+  },
+  degraded: {
+    accuracyMode: Location.Accuracy.LowPower,
+    timeInterval: 20000,
+    distanceInterval: 40,
+    backendMinIntervalMs: 12000,
+    backendMinMoveMeters: 30,
+  },
+};
+
+let gpsServiceInstance = null;
+
+// TaskManager tasks must be defined at module initialization time.
+if (!TaskManager.isTaskDefined(GPS_TASK_NAME)) {
+  TaskManager.defineTask(GPS_TASK_NAME, async ({ data, error }) => {
+    if (error) {
+      logger.error('GPS', 'Background task error', error);
+      return;
+    }
+
+    if (!gpsServiceInstance) {
+      logger.warn('GPS', 'Background task fired before GPS service instance was ready');
+      return;
+    }
+
+    if (data && data.locations && data.locations.length > 0) {
+      await gpsServiceInstance.processLocationUpdate(data.locations[0], true);
+    }
+  });
+}
 
 class GPSTrackingService {
   constructor() {
+    gpsServiceInstance = this;
     this.isTracking = false;
     this.currentPosition = null;
     this.watchId = null;
@@ -27,9 +91,19 @@ class GPSTrackingService {
     this.currentMilepost = null;
     this.currentTrackInfo = null;
     this.sentAlerts = new Map(); // Track sent alerts to avoid duplicates
+    this.boundaryAlertState = new Map(); // Track per-threshold boundary alert repeat timing
+    this.boundaryConfigCache = {
+      agencyId: null,
+      fetchedAt: 0,
+      configs: []
+    };
     this.gpsSmoother = globalGPSSmoother; // Use global GPS smoother instance
     this.lastBackendSendAt = 0;
     this.lastBackendSentPosition = null;
+    this.activeWatchProfile = 'good';
+    this.lastAdaptiveWatchUpdateAt = 0;
+    this.lastDegradedSignalAlertAt = 0;
+    this.netInfoUnsubscribe = null;
   }
 
   sanitizeNonNegative(value, fallback = 0) {
@@ -75,11 +149,108 @@ class GPSTrackingService {
       this.currentPosition.longitude
     );
 
-    if (elapsedMs >= GPS_BACKEND_MIN_SEND_INTERVAL_MS) {
+    const adaptivePolicy = this.getAdaptivePolicy(this.currentPosition.accuracy, this.currentPosition.speed);
+    const minIntervalMs = adaptivePolicy.backendMinIntervalMs || GPS_BACKEND_MIN_SEND_INTERVAL_MS;
+    const minMoveMeters = adaptivePolicy.backendMinMoveMeters || GPS_BACKEND_MIN_MOVE_METERS;
+
+    if (elapsedMs >= minIntervalMs) {
       return true;
     }
 
-    return movedMeters >= GPS_BACKEND_MIN_MOVE_METERS;
+    return movedMeters >= minMoveMeters;
+  }
+
+  getAdaptiveProfileName(accuracy) {
+    const value = Number(accuracy);
+    if (!Number.isFinite(value) || value <= 0) return 'degraded';
+    if (value <= 10) return 'excellent';
+    if (value <= 20) return 'good';
+    if (value <= 50) return 'fair';
+    if (value <= 100) return 'poor';
+    return 'degraded';
+  }
+
+  getAdaptivePolicy(accuracy, speed = 0) {
+    const profile = GPS_ADAPTIVE_PROFILES[this.getAdaptiveProfileName(accuracy)] || GPS_ADAPTIVE_PROFILES.good;
+    const speedMps = Number(speed) || 0;
+
+    // If moving faster, push updates more frequently for safer map following.
+    if (speedMps > 12) {
+      return {
+        ...profile,
+        backendMinIntervalMs: Math.max(2000, Math.floor(profile.backendMinIntervalMs * 0.75)),
+        backendMinMoveMeters: Math.max(5, Math.floor(profile.backendMinMoveMeters * 0.75)),
+      };
+    }
+
+    return profile;
+  }
+
+  deriveGpsConfidence(accuracy, sampleSize = 1) {
+    const value = Number(accuracy);
+    const samples = Number(sampleSize) || 1;
+
+    if (!Number.isFinite(value) || value <= 0) {
+      return { level: 'none', score: 0, label: 'No confidence' };
+    }
+
+    let score;
+    if (value <= 5) score = 98;
+    else if (value <= 10) score = 92;
+    else if (value <= 20) score = 80;
+    else if (value <= 50) score = 62;
+    else if (value <= 100) score = 38;
+    else score = 20;
+
+    if (samples >= 4) {
+      score = Math.min(99, score + 4);
+    }
+
+    if (score >= 90) return { level: 'high', score, label: 'High confidence' };
+    if (score >= 70) return { level: 'medium', score, label: 'Medium confidence' };
+    if (score >= 45) return { level: 'low', score, label: 'Low confidence' };
+    return { level: 'degraded', score, label: 'Unreliable' };
+  }
+
+  isSignalDegraded(accuracy) {
+    const value = Number(accuracy);
+    return !Number.isFinite(value) || value <= 0 || value > 100;
+  }
+
+  async maybeHandlePoorSignalDegradation(accuracy) {
+    if (!this.isSignalDegraded(accuracy)) {
+      return;
+    }
+
+    const now = Date.now();
+    if ((now - this.lastDegradedSignalAlertAt) < GPS_DEGRADED_SIGNAL_ALERT_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastDegradedSignalAlertAt = now;
+
+    await this.sendLocalAlert({
+      type: 'GPS_DEGRADED',
+      level: 'warning',
+      title: 'Poor GPS Signal',
+      message: 'GPS signal is degraded. Using last reliable location data where possible.',
+      data: {
+        accuracy,
+        degraded: true,
+      }
+    });
+  }
+
+  async triggerSyncOnReconnect() {
+    try {
+      const pendingLogs = await databaseService.getPendingGPSLogs(1);
+      if (pendingLogs.length === 0) {
+        return;
+      }
+      await syncService.forceSync();
+    } catch (error) {
+      logger.warn('GPS', 'Reconnect sync trigger failed', error);
+    }
   }
 
   async init() {
@@ -99,6 +270,16 @@ class GPSTrackingService {
       }
 
       await this.registerBackgroundTask();
+
+      if (!this.netInfoUnsubscribe) {
+        this.netInfoUnsubscribe = NetInfo.addEventListener((state) => {
+          const connected = Boolean(state?.isConnected && state?.isInternetReachable);
+          if (connected) {
+            this.triggerSyncOnReconnect();
+          }
+        });
+      }
+
       logger.info('GPS', 'GPS service initialized successfully');
       return true;
     } catch (error) {
@@ -110,18 +291,10 @@ class GPSTrackingService {
   async registerBackgroundTask() {
     if (Platform.OS === 'android' && CONFIG.GPS.BACKGROUND_TRACKING) {
       try {
-        TaskManager.defineTask(GPS_TASK_NAME, async ({ data, error }) => {
-          if (error) {
-            logger.error('GPS', 'Background task error', error);
-            return;
-          }
-
-          if (data && data.locations && data.locations.length > 0) {
-            await this.processLocationUpdate(data.locations[0], true);
-          }
-        });
-
-        this.backgroundTaskRegistered = true;
+        this.backgroundTaskRegistered = TaskManager.isTaskDefined(GPS_TASK_NAME);
+        if (!this.backgroundTaskRegistered) {
+          logger.warn('GPS', 'Background task is not defined at initialization time');
+        }
       } catch (error) {
         logger.error('GPS', 'Failed to register background task', error);
       }
@@ -136,23 +309,15 @@ class GPSTrackingService {
 
       this.currentAuthority = authority || null;
       this.sentAlerts.clear();
+      this.boundaryAlertState.clear();
       
       // Reset GPS smoother for new tracking session
       this.gpsSmoother.reset();
       const authorityId = this.currentAuthority?.authority_id || this.currentAuthority?.Authority_ID || this.currentAuthority?.id || null;
       logger.info('GPS', 'Started new tracking session', { authorityId, mode: authorityId ? 'authority' : 'general' });
 
-      // Start foreground tracking with higher accuracy
-      this.watchId = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: CONFIG.GPS.DISTANCE_FILTER,
-          timeInterval: CONFIG.GPS.UPDATE_INTERVAL,
-        },
-        (location) => {
-          this.processLocationUpdate(location, false);
-        }
-      );
+      // Start foreground tracking with adaptive quality profile.
+      await this.startForegroundWatch(this.activeWatchProfile);
 
       // Start background tracking if enabled
       if (CONFIG.GPS.BACKGROUND_TRACKING && this.backgroundTaskRegistered) {
@@ -162,7 +327,7 @@ class GPSTrackingService {
           timeInterval: CONFIG.GPS.FASTEST_INTERVAL * 2,
           showsBackgroundLocationIndicator: true,
           foregroundService: {
-            notificationTitle: 'Sidekick',
+            notificationTitle: 'RailForge Analytics',
             notificationBody: 'Tracking your position on tracks',
             notificationColor: '#FFD100',
           },
@@ -207,6 +372,10 @@ class GPSTrackingService {
       this.currentTrackInfo = null;
       this.lastBackendSendAt = 0;
       this.lastBackendSentPosition = null;
+      this.boundaryAlertState.clear();
+      this.activeWatchProfile = 'good';
+      this.lastAdaptiveWatchUpdateAt = 0;
+      this.lastDegradedSignalAlertAt = 0;
 
       store.dispatch(stopTracking());
 
@@ -237,6 +406,8 @@ class GPSTrackingService {
         heading: this.sanitizeHeading(smoothedLocation.heading),
         altitude: smoothedLocation.altitude,
       };
+      const gpsConfidence = this.deriveGpsConfidence(smoothedCoords.accuracy, smoothedLocation.sampleSize || 1);
+      await this.updateAdaptivePolling(smoothedCoords.accuracy);
 
       // Log GPS quality stats periodically
       const stats = this.gpsSmoother.getStats();
@@ -245,10 +416,12 @@ class GPSTrackingService {
       }
 
       // Authority-specific computations only when an authority is active.
-      if (this.currentAuthority) {
+      const signalDegraded = this.isSignalDegraded(smoothedCoords.accuracy);
+
+      if (this.currentAuthority && !signalDegraded) {
         this.currentTrackInfo = await this.getCurrentTrackInfo(smoothedCoords);
         this.currentMilepost = await this.calculateCurrentMilepost(smoothedCoords);
-      } else {
+      } else if (!this.currentAuthority) {
         this.currentTrackInfo = null;
         this.currentMilepost = null;
       }
@@ -257,6 +430,7 @@ class GPSTrackingService {
         latitude: smoothedCoords.latitude,
         longitude: smoothedCoords.longitude,
         accuracy: smoothedCoords.accuracy,
+        satelliteCount: Number.isFinite(Number(coords?.satellites)) ? Number(coords.satellites) : null,
         speed: smoothedCoords.speed,
         heading: smoothedCoords.heading,
         altitude: smoothedCoords.altitude,
@@ -264,6 +438,10 @@ class GPSTrackingService {
         milepost: this.currentMilepost,
         trackType: this.currentTrackInfo?.trackType,
         trackNumber: this.currentTrackInfo?.trackNumber,
+        gpsConfidence: gpsConfidence.level,
+        gpsConfidenceScore: gpsConfidence.score,
+        gpsConfidenceLabel: gpsConfidence.label,
+        degradedSignal: signalDegraded,
         smoothed: smoothedLocation.smoothed || false,
         sampleSize: smoothedLocation.sampleSize || 1,
       };
@@ -294,11 +472,15 @@ class GPSTrackingService {
       }));
 
       if (this.currentAuthority) {
-        // Check boundary alerts
-        await this.checkBoundaryAlerts();
-        
-        // Check proximity to other workers
-        await this.checkProximityAlerts();
+        if (!signalDegraded) {
+          // Check boundary alerts
+          await this.checkBoundaryAlerts();
+          
+          // Check proximity to other workers
+          await this.checkProximityAlerts();
+        } else {
+          await this.maybeHandlePoorSignalDegradation(smoothedCoords.accuracy);
+        }
 
         // Send authority-linked location update to backend/socket
         if (socketService.isConnected()) {
@@ -446,49 +628,169 @@ class GPSTrackingService {
   async checkBoundaryAlerts() {
     if (!this.currentAuthority || !this.currentMilepost) return;
 
-    const beginMP = parseFloat(this.currentAuthority.begin_mp);
-    const endMP = parseFloat(this.currentAuthority.end_mp);
+    const beginMP = parseFloat(this.currentAuthority.begin_mp ?? this.currentAuthority.Begin_MP);
+    const endMP = parseFloat(this.currentAuthority.end_mp ?? this.currentAuthority.End_MP);
     const currentMP = parseFloat(this.currentMilepost);
+
+    if (!Number.isFinite(beginMP) || !Number.isFinite(endMP) || !Number.isFinite(currentMP)) {
+      return;
+    }
     
     const distanceToBegin = Math.abs(currentMP - beginMP);
     const distanceToEnd = Math.abs(currentMP - endMP);
     const minDistance = Math.min(distanceToBegin, distanceToEnd);
     const boundary = distanceToBegin < distanceToEnd ? 'begin' : 'end';
 
-    // Get alert configurations from local database
-    const alertConfigs = await databaseService.executeQuery(`
-      SELECT * FROM alert_configurations 
-      WHERE agency_id = ? 
-        AND config_type = 'Boundary_Alert'
-        AND is_active = 1
-      ORDER BY distance_miles ASC
-    `, [this.currentAuthority.agency_id]);
+    const authorityId = this.currentAuthority.authority_id || this.currentAuthority.Authority_ID || this.currentAuthority.id;
+    const alertConfigs = await this.getBoundaryAlertConfigs();
 
-    for (let i = 0; i < alertConfigs.rows.length; i++) {
-      const config = alertConfigs.rows.item(i);
-      const alertKey = `boundary_${boundary}_${config.distance_miles}`;
-      
-      if (minDistance <= config.distance_miles) {
-        if (!this.sentAlerts.has(alertKey)) {
-          this.sentAlerts.set(alertKey, true);
-          
-          await this.sendLocalAlert({
-            type: 'BOUNDARY_ALERT',
-            level: config.alert_level,
-            title: `${config.alert_level.toUpperCase()} Boundary Alert`,
-            message: `Approaching ${boundary} boundary (${minDistance.toFixed(2)} miles)`,
-            data: {
-              authorityId: this.currentAuthority.authority_id || this.currentAuthority.id,
-              boundary: boundary,
-              distance: minDistance,
-              alertThreshold: config.distance_miles,
-              milepost: this.currentMilepost
-            }
-          });
+    for (let i = 0; i < alertConfigs.length; i++) {
+      const config = alertConfigs[i];
+      const threshold = Number(config.distance_miles ?? config.Distance_Miles);
+      if (!Number.isFinite(threshold)) {
+        continue;
+      }
+
+      const alertKey = `boundary_${authorityId}_${boundary}_${threshold}`;
+      const inZone = minDistance <= threshold;
+
+      if (!inZone) {
+        this.boundaryAlertState.delete(alertKey);
+        continue;
+      }
+
+      const repeatMinutes = Number(config.time_minutes ?? config.Time_Minutes);
+      const repeatIntervalMs = Number.isFinite(repeatMinutes) && repeatMinutes > 0
+        ? repeatMinutes * 60 * 1000
+        : 60 * 1000;
+
+      const lastSentAt = this.boundaryAlertState.get(alertKey) || 0;
+      const now = Date.now();
+      if ((now - lastSentAt) >= repeatIntervalMs) {
+        this.boundaryAlertState.set(alertKey, now);
+
+        const level = String(config.alert_level ?? config.Alert_Level ?? 'warning').toLowerCase();
+        await this.sendLocalAlert({
+          type: 'BOUNDARY_ALERT',
+          level,
+          title: `${level.toUpperCase()} Boundary Alert`,
+          message: `Approaching ${boundary} boundary (${minDistance.toFixed(2)} miles)`,
+          data: {
+            authorityId,
+            boundary,
+            distance: minDistance,
+            alertThreshold: threshold,
+            repeatIntervalMs,
+            milepost: this.currentMilepost
+          }
+        });
+      }
+
+      // Only evaluate the closest matched threshold to avoid multi-alert bursts.
+      break;
+    }
+  }
+
+  async startForegroundWatch(profileName = 'good') {
+    const profile = GPS_ADAPTIVE_PROFILES[profileName] || GPS_ADAPTIVE_PROFILES.good;
+    this.activeWatchProfile = profileName;
+    this.lastAdaptiveWatchUpdateAt = Date.now();
+
+    this.watchId = await Location.watchPositionAsync(
+      {
+        accuracy: profile.accuracyMode,
+        distanceInterval: profile.distanceInterval,
+        timeInterval: profile.timeInterval,
+      },
+      (location) => {
+        this.processLocationUpdate(location, false);
+      }
+    );
+  }
+
+  async updateAdaptivePolling(accuracy) {
+    if (!this.isTracking || !this.watchId) return;
+
+    const nextProfile = this.getAdaptiveProfileName(accuracy);
+    if (nextProfile === this.activeWatchProfile) return;
+
+    const now = Date.now();
+    if (now - this.lastAdaptiveWatchUpdateAt < GPS_ADAPTIVE_RECONFIGURE_INTERVAL_MS) {
+      return;
+    }
+
+    try {
+      this.watchId.remove();
+      this.watchId = null;
+      await this.startForegroundWatch(nextProfile);
+      logger.gps('Adaptive polling profile updated', { profile: nextProfile, accuracy });
+    } catch (error) {
+      logger.warn('GPS', 'Failed to update adaptive polling profile', error);
+    }
+  }
+
+  async getBoundaryAlertConfigs() {
+    const agencyId = this.currentAuthority?.agency_id ?? this.currentAuthority?.Agency_ID;
+    if (!agencyId) {
+      return [];
+    }
+
+    const now = Date.now();
+    if (
+      this.boundaryConfigCache.agencyId === agencyId &&
+      (now - this.boundaryConfigCache.fetchedAt) < 30000 &&
+      this.boundaryConfigCache.configs.length > 0
+    ) {
+      return this.boundaryConfigCache.configs;
+    }
+
+    let configs = [];
+
+    try {
+      const localConfigs = await databaseService.executeQuery(`
+        SELECT * FROM alert_configurations
+        WHERE agency_id = ?
+          AND config_type = 'Boundary_Alert'
+          AND is_active = 1
+        ORDER BY distance_miles ASC
+      `, [agencyId]);
+
+      if (localConfigs?.rows?.length > 0) {
+        for (let i = 0; i < localConfigs.rows.length; i++) {
+          configs.push(localConfigs.rows.item(i));
         }
-        break; // Only show the closest threshold alert
+      }
+    } catch (error) {
+      logger.warn('GPS', 'Failed to read local boundary alert configs', error);
+    }
+
+    if (!configs.length) {
+      try {
+        const response = await apiService.getAlertConfigurations(agencyId);
+        const allConfigs = response?.data?.configurations || [];
+        configs = allConfigs.filter((cfg) => {
+          const configType = cfg.config_type ?? cfg.Config_Type;
+          const isActive = cfg.is_active ?? cfg.Is_Active;
+          return configType === 'Boundary_Alert' && (isActive === 1 || isActive === true);
+        });
+      } catch (error) {
+        logger.warn('GPS', 'Failed to fetch boundary alert configs from API', error);
       }
     }
+
+    configs.sort((a, b) => {
+      const da = Number(a.distance_miles ?? a.Distance_Miles ?? Number.POSITIVE_INFINITY);
+      const db = Number(b.distance_miles ?? b.Distance_Miles ?? Number.POSITIVE_INFINITY);
+      return da - db;
+    });
+
+    this.boundaryConfigCache = {
+      agencyId,
+      fetchedAt: now,
+      configs
+    };
+
+    return configs;
   }
 
   async checkProximityAlerts() {
@@ -627,6 +929,9 @@ class GPSTrackingService {
       speed: this.sanitizeNonNegative(this.currentPosition.speed, 0),
       heading: this.sanitizeHeading(this.currentPosition.heading),
       accuracy: this.sanitizeNonNegative(this.currentPosition.accuracy, 0),
+      satelliteCount: this.currentPosition.satelliteCount,
+      hasSignal: Number.isFinite(Number(this.currentPosition.accuracy)) && Number(this.currentPosition.accuracy) > 0,
+      timestamp: this.currentPosition.timestamp,
       isOffline: false
     };
 
@@ -650,6 +955,10 @@ class GPSTrackingService {
       socketService.emit('location-update', {
         ...gpsData,
         agencyId: user?.Agency_ID || this.currentAuthority.agency_id,
+        subdivisionId: this.currentAuthority?.Subdivision_ID || this.currentAuthority?.subdivision_id || null,
+        trackType: this.currentTrackInfo?.track_type || this.currentAuthority?.Track_Type || this.currentAuthority?.track_type || null,
+        trackNumber: this.currentTrackInfo?.track_number || this.currentAuthority?.Track_Number || this.currentAuthority?.track_number || null,
+        role: user?.Role || user?.role || null,
         milepost: this.currentMilepost,
         timestamp: this.currentPosition.timestamp
       });
@@ -706,6 +1015,9 @@ class GPSTrackingService {
               }
             ]
           );
+        } else if (alertData.type === 'GPS_DEGRADED') {
+          // Avoid interruptive popups for degraded signal; keep it in alert feed/state.
+          logger.warn('GPS', alertData.message, alertData.data || {});
         } else {
           // Show native alert for other alert types
           Alert.alert(
@@ -748,10 +1060,12 @@ class GPSTrackingService {
       // Sync pending GPS logs
       const pendingLogs = await databaseService.getPendingGPSLogs(50);
       
-      if (pendingLogs.length > 0 && socketService.isConnected()) {
-        // Use your existing apiService to sync logs
-        // This would be implemented in your sync service
-        logger.gps(`Syncing ${pendingLogs.length} GPS logs...`);
+      if (pendingLogs.length > 0) {
+        const netState = await NetInfo.fetch();
+        if (netState?.isConnected && netState?.isInternetReachable) {
+          logger.gps(`Syncing ${pendingLogs.length} GPS logs on reconnect...`);
+          await syncService.forceSync();
+        }
       }
 
       this.lastSyncTime = now;
@@ -782,6 +1096,10 @@ class GPSTrackingService {
 
   async cleanup() {
     await this.stopTracking();
+    if (this.netInfoUnsubscribe) {
+      this.netInfoUnsubscribe();
+      this.netInfoUnsubscribe = null;
+    }
   }
 }
 

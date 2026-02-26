@@ -2,7 +2,10 @@ import io from 'socket.io-client';
 import { CONFIG } from '../../constants/config';
 import databaseService from '../database/DatabaseService';
 import apiService from '../api/ApiService';
-import { Alert } from 'react-native';
+import { Alert, Vibration, InteractionManager } from 'react-native';
+import { store } from '../../store/store';
+import { setLocationReliability } from '../../store/slices/gpsSlice';
+import navigationService from '../../navigation/NavigationService';
 
 class SocketService {
   constructor() {
@@ -11,6 +14,8 @@ class SocketService {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = CONFIG.SOCKET.RECONNECTION_ATTEMPTS;
     this.listeners = new Map();
+    this.alertVisible = false;
+    this.lastVisualAlertAt = 0;
   }
 
   normalizeUser(user) {
@@ -145,6 +150,8 @@ class SocketService {
     this.socket.on('user-location-update', this.handleUserLocationUpdate.bind(this));
     this.socket.on('proximity_alert', this.handleProximityAlert.bind(this));
     this.socket.on('boundary_alert', this.handleBoundaryAlert.bind(this));
+    this.socket.on('gps_safety_alert', this.handleGpsSafetyAlert.bind(this));
+    this.socket.on('location_reliability', this.handleLocationReliability.bind(this));
   }
 
   async handleAlert(alertData) {
@@ -238,26 +245,103 @@ class SocketService {
     this.triggerEvent('boundary_alert', alertData);
   }
 
-  showNotification(alertData) {
-    // Use platform-specific notifications
-    Alert.alert(
-      this.getAlertTitle(alertData),
-      alertData.message,
-      [
-        {
-          text: 'OK',
-          onPress: () => console.log('Alert dismissed')
-        },
-        {
-          text: 'View Details',
-          onPress: () => this.triggerEvent('notification_pressed', alertData)
-        }
-      ],
-      { cancelable: false }
-    );
+  handleGpsSafetyAlert(alertData) {
+    console.log('GPS safety alert:', alertData);
 
-    // Vibrate device based on alert level
-    this.vibrateDevice(alertData.level);
+    this.showNotification({
+      type: 'GPS_SAFETY',
+      level: alertData.level || 'critical',
+      message: alertData.message,
+      data: alertData.data
+    });
+
+    this.triggerEvent('gps_safety_alert', alertData);
+  }
+
+  handleLocationReliability(data) {
+    console.log('Location reliability update:', data);
+    store.dispatch(setLocationReliability({
+      mode: data.mode || 'RELIABLE',
+      reasons: Array.isArray(data.reasons) ? data.reasons : [],
+      pauseAuthorityAlerts: Boolean(data.pauseAuthorityAlerts),
+      message: data.message || null,
+      timestamp: data.timestamp || new Date().toISOString(),
+    }));
+
+    this.triggerEvent('location_reliability', data);
+  }
+
+  showNotification(alertData) {
+    const reduxSettings = store.getState()?.settings || {};
+    const policy = alertData?.data?.notificationPolicy || {};
+
+    const notificationsEnabled = reduxSettings.notificationsEnabled !== false;
+    const visualEnabled = notificationsEnabled && policy.visualEnabled !== false;
+    const vibrationEnabled = notificationsEnabled && reduxSettings.vibrationEnabled !== false && policy.vibrationEnabled !== false;
+    const soundEnabled = notificationsEnabled && reduxSettings.soundEnabled !== false && policy.audioEnabled !== false;
+
+    if (!visualEnabled && !vibrationEnabled && !soundEnabled) {
+      return;
+    }
+
+    if (visualEnabled) {
+      const now = Date.now();
+      // Guard against stacked native alerts that can cause unstable UI mount/unmount behavior.
+      if (this.alertVisible && now - this.lastVisualAlertAt < 1500) {
+        return;
+      }
+
+      const clearAlertState = () => {
+        this.alertVisible = false;
+        this.lastVisualAlertAt = Date.now();
+      };
+
+      this.alertVisible = true;
+      this.lastVisualAlertAt = now;
+
+      Alert.alert(
+        this.getAlertTitle(alertData),
+        alertData.message,
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              clearAlertState();
+              console.log('Alert dismissed');
+            }
+          },
+          {
+            text: 'View Details',
+            onPress: () => {
+              clearAlertState();
+              this.triggerEvent('notification_pressed', alertData);
+              InteractionManager.runAfterInteractions(() => {
+                setTimeout(() => {
+                  navigationService.navigate('MainTabs', {
+                    screen: 'Alerts',
+                    params: {
+                      fromNotification: true,
+                      alertType: alertData?.type || null,
+                      openedAt: new Date().toISOString(),
+                    },
+                  });
+                }, 50);
+              });
+            }
+          }
+        ],
+        { cancelable: false, onDismiss: clearAlertState }
+      );
+    }
+
+    if (vibrationEnabled) {
+      this.vibrateDevice(alertData.level);
+    }
+
+    if (soundEnabled) {
+      // Leave sound handling to push/local notification channels for now.
+      console.log(`Sound enabled for ${alertData.level} alert`);
+    }
   }
 
   getAlertTitle(alertData) {
@@ -276,9 +360,15 @@ class SocketService {
   }
 
   vibrateDevice(level) {
-    // This would use React Native's Vibration API
-    // For now, just log
-    console.log(`Vibrating for ${level} alert`);
+    if (level === 'critical') {
+      Vibration.vibrate([0, 400, 200, 400]);
+      return;
+    }
+    if (level === 'warning') {
+      Vibration.vibrate([0, 250, 150, 250]);
+      return;
+    }
+    Vibration.vibrate(180);
   }
 
   // Event subscription methods

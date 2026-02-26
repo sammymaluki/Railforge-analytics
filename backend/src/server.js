@@ -16,6 +16,7 @@ const routes = require('./routes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const requireHttps = ['1', 'true', 'yes', 'on'].includes(String(process.env.REQUIRE_HTTPS || '').toLowerCase());
 
 // Security middleware
 app.use(helmet({
@@ -28,7 +29,8 @@ app.use(helmet({
       connectSrc: ['\'self\'', 'ws:', 'wss:']
     }
   },
-  crossOriginEmbedderPolicy: false
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
 
 // CORS configuration
@@ -40,6 +42,21 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Optional hard enforcement for TLS in production deployments behind a proxy/load balancer.
+if (requireHttps) {
+  app.enable('trust proxy');
+  app.use((req, res, next) => {
+    if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+      return next();
+    }
+
+    return res.status(403).json({
+      success: false,
+      error: 'HTTPS is required'
+    });
+  });
+}
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -54,8 +71,13 @@ app.use(morgan('combined', {
 }));
 app.use(requestLogger);
 
-// Static files
-app.use('/uploads', express.static(path.join(__dirname, '../public/uploads')));
+// Static files (pin photos and other uploads)
+app.use('/uploads', (req, res, next) => {
+  const allowedOrigin = process.env.CLIENT_URL || '*';
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, '../public/uploads')));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -143,6 +165,11 @@ const startServer = async () => {
           userId: data.userId,
           latitude: data.latitude,
           longitude: data.longitude,
+          authorityId: data.authorityId || null,
+          subdivisionId: data.subdivisionId || null,
+          trackType: data.trackType || null,
+          trackNumber: data.trackNumber || null,
+          role: socket.user?.Role || data.role || null,
           timestamp: new Date()
         });
       });

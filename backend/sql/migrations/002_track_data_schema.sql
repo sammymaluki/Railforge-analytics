@@ -1,5 +1,5 @@
 -- Tracks and Milepost Geometry Tables
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- 4. Tracks Table (Track Segments & Assets)

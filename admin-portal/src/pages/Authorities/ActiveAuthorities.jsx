@@ -41,6 +41,18 @@ import {
 } from '@mui/icons-material';
 import api from '../../services/api';
 
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_ORIGIN = API_BASE.replace(/\/api\/?$/, '');
+
+const resolvePhotoUrl = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('/')) return `${API_ORIGIN}${trimmed}`;
+  return `${API_ORIGIN}/${trimmed}`;
+};
+
 const ActiveAuthorities = () => {
   const [authorities, setAuthorities] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -502,10 +514,10 @@ const ActiveAuthorities = () => {
                             </Typography>
                           </Box>
 
-                          {pin.Photo_URL && (
+                          {resolvePhotoUrl(pin.Photo_URL) && (
                             <Box sx={{ my: 2 }}>
                               <img
-                                src={pin.Photo_URL}
+                                src={resolvePhotoUrl(pin.Photo_URL)}
                                 alt=""
                                 style={{
                                   width: '100%',
@@ -517,6 +529,48 @@ const ActiveAuthorities = () => {
                                   e.target.style.display = 'none';
                                 }}
                               />
+                            </Box>
+                          )}
+
+                          {pin.Photo_URLs && !pin.Photo_URL && (
+                            <Box sx={{ my: 2 }}>
+                              {(() => {
+                                try {
+                                  const photoUrls = JSON.parse(pin.Photo_URLs)
+                                    .map((url) => resolvePhotoUrl(url))
+                                    .filter(Boolean);
+                                  if (Array.isArray(photoUrls) && photoUrls.length > 0) {
+                                    return (
+                                      <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 1 }}>
+                                        {photoUrls.slice(0, 4).map((url, idx) => (
+                                          <img
+                                            key={idx}
+                                            src={url}
+                                            alt=""
+                                            style={{
+                                              width: '100%',
+                                              maxHeight: '150px',
+                                              objectFit: 'cover',
+                                              borderRadius: '4px'
+                                            }}
+                                            onError={(e) => {
+                                              e.target.style.display = 'none';
+                                            }}
+                                          />
+                                        ))}
+                                        {photoUrls.length > 4 && (
+                                          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: '#333', borderRadius: '4px' }}>
+                                            <Typography variant="body2" color="textSecondary">+{photoUrls.length - 4} more</Typography>
+                                          </Box>
+                                        )}
+                                      </Box>
+                                    );
+                                  }
+                                  return null;
+                                } catch (e) {
+                                  return null;
+                                }
+                              })()}
                             </Box>
                           )}
 

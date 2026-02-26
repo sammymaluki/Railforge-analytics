@@ -60,24 +60,25 @@ const BoundaryIndicator = ({ distanceToBegin, distanceToEnd, withinBoundaries })
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: 80,
-    left: SPACING.md,
-    right: SPACING.md,
+    bottom: 74,
+    left: SPACING.sm,
+    right: SPACING.sm,
     backgroundColor: COLORS.surface,
     borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
     ...SHADOWS.lg,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
+    marginBottom: SPACING.xs,
   },
   headerText: {
-    fontSize: FONT_SIZES.sm,
+    fontSize: FONT_SIZES.xs,
     fontWeight: FONT_WEIGHTS.semibold,
     color: COLORS.text,
-    marginLeft: SPACING.sm,
+    marginLeft: SPACING.xs,
   },
   distanceRow: {
     flexDirection: 'row',
@@ -85,7 +86,7 @@ const styles = StyleSheet.create({
   distanceItem: {
     flex: 1,
     borderLeftWidth: 3,
-    paddingLeft: SPACING.sm,
+    paddingLeft: SPACING.xs,
   },
   distanceLabel: {
     fontSize: FONT_SIZES.xs,
@@ -93,13 +94,13 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.xs,
   },
   distanceValue: {
-    fontSize: FONT_SIZES.lg,
+    fontSize: FONT_SIZES.md,
     fontWeight: FONT_WEIGHTS.bold,
   },
   divider: {
     width: 1,
     backgroundColor: COLORS.border,
-    marginHorizontal: SPACING.md,
+    marginHorizontal: SPACING.sm,
   },
 });
 

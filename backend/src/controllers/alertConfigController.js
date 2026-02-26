@@ -1,5 +1,6 @@
 const AlertConfiguration = require('../models/AlertConfiguration');
 const { logger } = require('../config/logger');
+const { canAccessAgency } = require('../utils/rbac');
 
 /**
  * Get all alert configurations for an agency
@@ -9,7 +10,7 @@ const getAlertConfigurations = async (req, res) => {
     const { agencyId } = req.params;
 
     // Check authorization
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied to this agency\'s alert configurations'
@@ -43,7 +44,7 @@ const getAlertConfigurationsByType = async (req, res) => {
     const { agencyId, configType } = req.params;
 
     // Check authorization
-    if (req.user.role !== 'Administrator' && req.user.agencyId !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'
@@ -106,7 +107,7 @@ const createAlertConfiguration = async (req, res) => {
     } = req.body;
 
     // Only administrators can create alert configurations
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can create alert configurations'
@@ -177,7 +178,7 @@ const createAlertConfiguration = async (req, res) => {
       notificationTitle
     });
 
-    logger.info(`Alert configuration created: ${newConfig.Config_ID} by user ${req.user.userId}`);
+    logger.info(`Alert configuration created: ${newConfig.Config_ID} by user ${req.user.User_ID}`);
 
     res.status(201).json({
       success: true,
@@ -205,7 +206,7 @@ const updateAlertConfiguration = async (req, res) => {
     const updateData = req.body;
 
     // Only administrators can update alert configurations
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can update alert configurations'
@@ -269,7 +270,7 @@ const updateAlertConfiguration = async (req, res) => {
       });
     }
 
-    logger.info(`Alert configuration updated: ${configId} by user ${req.user.userId}`);
+    logger.info(`Alert configuration updated: ${configId} by user ${req.user.User_ID}`);
 
     res.json({
       success: true,
@@ -296,7 +297,7 @@ const deleteAlertConfiguration = async (req, res) => {
     const { configId } = req.params;
 
     // Only administrators can delete alert configurations
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can delete alert configurations'
@@ -315,7 +316,7 @@ const deleteAlertConfiguration = async (req, res) => {
       });
     }
 
-    logger.info(`Alert configuration deleted: ${configId} by user ${req.user.userId}`);
+    logger.info(`Alert configuration deleted: ${configId} by user ${req.user.User_ID}`);
 
     res.json({
       success: true,
@@ -339,7 +340,7 @@ const bulkUpdateAlertConfigurations = async (req, res) => {
     const { configurations } = req.body;
 
     // Only administrators can bulk update
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can bulk update alert configurations'
@@ -402,7 +403,7 @@ const bulkUpdateAlertConfigurations = async (req, res) => {
     }
 
     const successCount = results.filter(r => r.success).length;
-    logger.info(`Bulk update: ${successCount}/${configurations.length} configurations updated by user ${req.user.userId}`);
+    logger.info(`Bulk update: ${successCount}/${configurations.length} configurations updated by user ${req.user.User_ID}`);
 
     res.json({
       success: true,

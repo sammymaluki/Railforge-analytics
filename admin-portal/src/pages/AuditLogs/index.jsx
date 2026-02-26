@@ -24,7 +24,10 @@ import {
   Tooltip,
   FormControl,
   InputLabel,
-  Select
+  Select,
+  Switch,
+  FormControlLabel,
+  Divider
 } from '@mui/material';
 import {
   Download as DownloadIcon,
@@ -32,13 +35,12 @@ import {
   FilterList as FilterIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
-import { useSelector } from 'react-redux';
 import auditLogService from '../../services/auditLogService';
+import { useSelector } from 'react-redux';
 
 const AuditLogs = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use DEFAULT agency (ID 1) for testing
-  const agencyId = 1;
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 1);
 
   // State
   const [logs, setLogs] = useState([]);
@@ -48,6 +50,9 @@ const AuditLogs = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [retentionPolicy, setRetentionPolicy] = useState(null);
+  const [savingPolicy, setSavingPolicy] = useState(false);
+  const [runningRetention, setRunningRetention] = useState(false);
 
   // Pagination
   const [page, setPage] = useState(0);
@@ -70,6 +75,7 @@ const AuditLogs = () => {
     loadActionTypes();
     loadAffectedTables();
     loadStats();
+    loadRetentionPolicy();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -146,6 +152,18 @@ const AuditLogs = () => {
     }
   };
 
+  const loadRetentionPolicy = async () => {
+    if (!agencyId) return;
+    try {
+      const response = await auditLogService.getRetentionPolicy(agencyId);
+      if (response.success) {
+        setRetentionPolicy(response.data);
+      }
+    } catch (err) {
+      console.error('Failed to load retention policy:', err);
+    }
+  };
+
   const handleFilterChange = (field, value) => {
     setFilters(prev => ({ ...prev, [field]: value }));
     setPage(0); // Reset to first page when filters change
@@ -154,6 +172,47 @@ const AuditLogs = () => {
   const handleRefresh = () => {
     loadLogs();
     loadStats();
+    loadRetentionPolicy();
+  };
+
+  const handleRetentionFieldChange = (field, value) => {
+    setRetentionPolicy((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveRetentionPolicy = async () => {
+    if (!retentionPolicy) return;
+    setSavingPolicy(true);
+    try {
+      const response = await auditLogService.updateRetentionPolicy(agencyId, {
+        auditLogRetentionDays: Number(retentionPolicy.auditLogRetentionDays),
+        alertLogRetentionDays: Number(retentionPolicy.alertLogRetentionDays),
+        gpsLogRetentionDays: Number(retentionPolicy.gpsLogRetentionDays),
+        sessionLogRetentionDays: Number(retentionPolicy.sessionLogRetentionDays),
+        isEnabled: Boolean(retentionPolicy.isEnabled)
+      });
+      if (response.success) {
+        setRetentionPolicy(response.data);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to update retention policy');
+    } finally {
+      setSavingPolicy(false);
+    }
+  };
+
+  const handleRunRetentionCleanup = async () => {
+    setRunningRetention(true);
+    try {
+      const response = await auditLogService.runRetentionCleanup(agencyId);
+      if (response.success) {
+        await loadRetentionPolicy();
+        setError(null);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to run retention cleanup');
+    } finally {
+      setRunningRetention(false);
+    }
   };
 
   const handleExport = async () => {
@@ -366,6 +425,85 @@ const AuditLogs = () => {
           </Grid>
         </Grid>
       </Paper>
+
+      {/* Retention Policy */}
+      {retentionPolicy && (
+        <Paper sx={{ p: 2, mb: 3 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+            <Typography variant="h6">Audit Retention Policy</Typography>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Button
+                variant="outlined"
+                onClick={handleRunRetentionCleanup}
+                disabled={runningRetention || savingPolicy}
+              >
+                {runningRetention ? 'Running Cleanup...' : 'Run Cleanup Now'}
+              </Button>
+              <Button
+                variant="contained"
+                onClick={handleSaveRetentionPolicy}
+                disabled={savingPolicy || runningRetention}
+              >
+                {savingPolicy ? 'Saving...' : 'Save Policy'}
+              </Button>
+            </Box>
+          </Box>
+          <Divider sx={{ mb: 2 }} />
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                fullWidth
+                type="number"
+                label="Audit Logs (days)"
+                value={retentionPolicy.auditLogRetentionDays ?? 365}
+                onChange={(e) => handleRetentionFieldChange('auditLogRetentionDays', e.target.value)}
+                inputProps={{ min: 1, max: 3650 }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                fullWidth
+                type="number"
+                label="Alert Logs (days)"
+                value={retentionPolicy.alertLogRetentionDays ?? 180}
+                onChange={(e) => handleRetentionFieldChange('alertLogRetentionDays', e.target.value)}
+                inputProps={{ min: 1, max: 3650 }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                fullWidth
+                type="number"
+                label="GPS Logs (days)"
+                value={retentionPolicy.gpsLogRetentionDays ?? 90}
+                onChange={(e) => handleRetentionFieldChange('gpsLogRetentionDays', e.target.value)}
+                inputProps={{ min: 1, max: 3650 }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6} md={3}>
+              <TextField
+                fullWidth
+                type="number"
+                label="Session Logs (days)"
+                value={retentionPolicy.sessionLogRetentionDays ?? 90}
+                onChange={(e) => handleRetentionFieldChange('sessionLogRetentionDays', e.target.value)}
+                inputProps={{ min: 1, max: 3650 }}
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <FormControlLabel
+                control={(
+                  <Switch
+                    checked={Boolean(retentionPolicy.isEnabled)}
+                    onChange={(e) => handleRetentionFieldChange('isEnabled', e.target.checked)}
+                  />
+                )}
+                label="Retention cleanup enabled"
+              />
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
 
       {/* Error Display */}
       {error && (

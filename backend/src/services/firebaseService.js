@@ -1,7 +1,17 @@
 // backend/src/services/firebaseService.js
-const admin = require('firebase-admin');
 const { logger } = require('../config/logger');
 const db = require('../config/database');
+const path = require('path');
+const fs = require('fs');
+
+let admin = null;
+try {
+  // Keep push optional in local/dev setups where firebase-admin is not installed yet.
+  // eslint-disable-next-line global-require
+  admin = require('firebase-admin');
+} catch (error) {
+  admin = null;
+}
 
 class FirebaseService {
   constructor() {
@@ -11,10 +21,24 @@ class FirebaseService {
 
   initializeFirebase() {
     try {
+      if (!admin) {
+        logger.warn('firebase-admin module not installed. Push notifications disabled.');
+        return;
+      }
+
       if (!admin.apps.length) {
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}');
+        // Try to load from file first, then fall back to environment variable
+        let serviceAccount = null;
+        const serviceAccountPath = path.join(__dirname, '../../firebase-service-account.json');
         
-        if (!serviceAccount.project_id) {
+        if (fs.existsSync(serviceAccountPath)) {
+          const fileContent = fs.readFileSync(serviceAccountPath, 'utf8');
+          serviceAccount = JSON.parse(fileContent);
+        } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+          serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        }
+        
+        if (!serviceAccount || !serviceAccount.project_id) {
           logger.warn('Firebase service account not configured. Push notifications disabled.');
           return;
         }
@@ -171,6 +195,9 @@ class FirebaseService {
           trackType: overlapData.Track_Type,
           trackNumber: overlapData.Track_Number,
         }),
+        notificationPolicy: overlapData.notificationPolicy
+          ? JSON.stringify(overlapData.notificationPolicy)
+          : '',
         priority: 'high',
       },
     };
@@ -187,6 +214,9 @@ class FirebaseService {
         level: proximityData.level,
         distance: proximityData.distance.toString(),
         otherUser: JSON.stringify(proximityData.otherUser),
+        notificationPolicy: proximityData.notificationPolicy
+          ? JSON.stringify(proximityData.notificationPolicy)
+          : '',
         priority: proximityData.level === 'critical' ? 'high' : 'normal',
       },
     };
@@ -204,6 +234,9 @@ class FirebaseService {
         boundary: boundaryData.boundary,
         distance: boundaryData.distance.toString(),
         level: boundaryData.level,
+        notificationPolicy: boundaryData.notificationPolicy
+          ? JSON.stringify(boundaryData.notificationPolicy)
+          : '',
         priority: boundaryData.level === 'critical' ? 'high' : 'normal',
       },
     };

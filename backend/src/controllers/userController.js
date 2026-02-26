@@ -1,6 +1,7 @@
 const User = require('../models/User');
 const bcrypt = require('bcryptjs');
 const { logger } = require('../config/logger');
+const { canAccessAgency, isGlobalAdmin } = require('../utils/rbac');
 
 class UserController {
   async getAllUsers(req, res) {
@@ -8,7 +9,7 @@ class UserController {
       const { page = 1, limit = 20, search = '', agencyId } = req.query;
       
       // If user is not admin, filter by their agency
-      const filterAgencyId = req.user.Role === 'Administrator' 
+      const filterAgencyId = isGlobalAdmin(req.user)
         ? (agencyId || null) 
         : req.user.Agency_ID;
       
@@ -45,7 +46,7 @@ class UserController {
       }
 
       // Check if user has permission to view this user
-      if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== user.Agency_ID) {
+      if (!canAccessAgency(req.user, Number(user.Agency_ID))) {
         return res.status(403).json({
           success: false,
           error: 'Forbidden - Cannot access user from different agency'
@@ -67,7 +68,22 @@ class UserController {
 
   async createUser(req, res) {
     try {
-      const userData = req.body;
+      const userData = { ...req.body };
+
+      if (!isGlobalAdmin(req.user)) {
+        userData.agencyId = req.user.Agency_ID;
+        if (String(userData.role || '') === 'Administrator') {
+          return res.status(403).json({
+            success: false,
+            error: 'Only super administrators can create administrator accounts'
+          });
+        }
+      } else if (userData.agencyId && !canAccessAgency(req.user, Number(userData.agencyId))) {
+        return res.status(403).json({
+          success: false,
+          error: 'Cannot create user for this agency'
+        });
+      }
       
       // Check if username already exists
       const existingUser = await User.findByUsername(userData.username);
@@ -111,6 +127,13 @@ class UserController {
         });
       }
 
+      if (!canAccessAgency(req.user, Number(existingUser.Agency_ID))) {
+        return res.status(403).json({
+          success: false,
+          error: 'Cannot update user from a different agency'
+        });
+      }
+
       // Map frontend field names to database column names
       const mappedData = {};
       if (updateData.employeeName !== undefined) {
@@ -123,9 +146,21 @@ class UserController {
         mappedData.Email = updateData.email;
       }
       if (updateData.role !== undefined) {
+        if (!isGlobalAdmin(req.user) && String(updateData.role) === 'Administrator') {
+          return res.status(403).json({
+            success: false,
+            error: 'Only super administrators can assign administrator role'
+          });
+        }
         mappedData.Role = updateData.role;
       }
       if (updateData.agencyId !== undefined) {
+        if (!isGlobalAdmin(req.user)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Only super administrators can change agency assignment'
+          });
+        }
         mappedData.Agency_ID = updateData.agencyId;
       }
 
@@ -163,6 +198,13 @@ class UserController {
         return res.status(404).json({
           success: false,
           error: 'User not found'
+        });
+      }
+
+      if (!canAccessAgency(req.user, Number(user.Agency_ID))) {
+        return res.status(403).json({
+          success: false,
+          error: 'Cannot delete user from a different agency'
         });
       }
 

@@ -6,6 +6,9 @@ const {
   calculateMilepostFromGeometry,
   calculateTrackDistance
 } = require('../utils/geoCalculations');
+const { getGpsAccuracyMonitoringConfig, getGpsSafetyAlertConfig } = require('./agencyConfigService');
+const { logAuditEvent } = require('./auditEventService');
+const { emitToUser } = require('../config/socket');
 
 const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +63,9 @@ class GPSService {
     this.updateInterval = 30000; // 30 seconds for boundary checks
     this.authorityCache = new Map();
     this.authorityCacheTtlMs = 15000;
+    this.gpsAccuracyAuditState = new Map();
+    this.gpsSafetyAlertState = new Map();
+    this.locationReliabilityState = new Map();
   }
 
   async getAuthoritySnapshot(authorityId) {
@@ -113,6 +119,9 @@ class GPSService {
         return { logged: true, authority: null };
       }
 
+      await this.logGpsAccuracyDegradation(gpsData, authority);
+      const gpsSafetyState = await this.evaluateGpsSafety(gpsData, authority);
+
       // Calculate milepost using geometry
       const milepostData = await this.calculateMilepost(
         authority.Subdivision_ID,
@@ -129,13 +138,23 @@ class GPSService {
           currentMP
         );
 
-        await AlertService.checkBoundaryAlerts(
-          authority,
-          currentMP,
-          latitude,
-          longitude,
-          boundaryDistances
-        );
+        if (!gpsSafetyState.pauseAuthorityAlerts) {
+          const boundaryAlerts = await AlertService.checkBoundaryAlerts(
+            authority,
+            currentMP,
+            latitude,
+            longitude,
+            boundaryDistances
+          );
+
+          if (boundaryAlerts.length > 0 && authority.User_ID) {
+            await AlertService.sendBoundaryAlerts(
+              authority.User_ID,
+              authority.Authority_ID,
+              boundaryAlerts
+            );
+          }
+        }
 
         // Check proximity to other workers
         const proximityData = await Authority.checkProximity(
@@ -154,11 +173,24 @@ class GPSService {
         return {
           logged: true,
           milepost: milepostData,
-          boundaryDistances
+          boundaryDistances,
+          locationReliability: {
+            isUnreliable: gpsSafetyState.isUnreliable,
+            reasons: gpsSafetyState.reasons,
+            pauseAuthorityAlerts: gpsSafetyState.pauseAuthorityAlerts,
+          }
         };
       }
 
-      return { logged: true, milepost: null };
+      return {
+        logged: true,
+        milepost: null,
+        locationReliability: {
+          isUnreliable: gpsSafetyState.isUnreliable,
+          reasons: gpsSafetyState.reasons,
+          pauseAuthorityAlerts: gpsSafetyState.pauseAuthorityAlerts,
+        }
+      };
 
     } catch (error) {
       logger.error('Process GPS update error:', error);
@@ -414,6 +446,405 @@ class GPSService {
       }
     }
   }
+
+  getGpsSafetyKey(userId, authorityId) {
+    return `${Number(userId) || 0}:${Number(authorityId) || 0}`;
+  }
+
+  shouldEmitGpsSafetyAlert(key, alertType, repeatFrequencySeconds) {
+    const stateKey = `${key}:${alertType}`;
+    const now = Date.now();
+    const lastSentAt = this.gpsSafetyAlertState.get(stateKey) || 0;
+    const repeatMs = Math.max(1000, Number(repeatFrequencySeconds || 30) * 1000);
+
+    if (!lastSentAt || (now - lastSentAt) >= repeatMs) {
+      this.gpsSafetyAlertState.set(stateKey, now);
+      return true;
+    }
+
+    return false;
+  }
+
+  async createGpsSafetyAlertLog(userId, authorityId, alertType, level, message, distance = null) {
+    try {
+      const normalizedType = String(alertType || '').toUpperCase();
+      let dbAlertType = 'GPS_Accuracy';
+      if (normalizedType.includes('STALE')) dbAlertType = 'GPS_Stale';
+      if (normalizedType.includes('SIGNAL')) dbAlertType = 'GPS_Signal_Lost';
+      if (normalizedType.includes('ACCURACY')) dbAlertType = 'GPS_Accuracy';
+      if (normalizedType.includes('UNRELIABLE')) dbAlertType = 'Location_Unreliable';
+
+      await queryWithRetry(
+        (pool) => pool.request()
+          .input('userId', sql.Int, Number(userId))
+          .input('authorityId', sql.Int, Number.isFinite(Number(authorityId)) ? Number(authorityId) : null)
+          .input('alertType', sql.VarChar(50), dbAlertType)
+          .input('alertLevel', sql.VarChar(20), String(level || 'Warning'))
+          .input('triggeredDistance', sql.Decimal(5, 2), Number.isFinite(Number(distance)) ? Number(distance) : null)
+          .input('message', sql.NVarChar(500), String(message || 'GPS safety alert')),
+        `
+          INSERT INTO Alert_Logs (
+            User_ID,
+            Authority_ID,
+            Alert_Type,
+            Alert_Level,
+            Triggered_Distance,
+            Message,
+            Is_Delivered,
+            Delivered_Time,
+            Is_Read,
+            Created_Date
+          )
+          VALUES (
+            @userId,
+            @authorityId,
+            @alertType,
+            @alertLevel,
+            @triggeredDistance,
+            @message,
+            1,
+            GETDATE(),
+            0,
+            GETDATE()
+          )
+        `,
+        'createGpsSafetyAlertLog.insert'
+      );
+    } catch (error) {
+      logger.error('Create GPS safety alert log error:', error);
+    }
+  }
+
+  async emitGpsSafetyAlert(userId, authorityId, agencyId, payload, config, auditContext = null) {
+    try {
+      const key = this.getGpsSafetyKey(userId, authorityId);
+      const repeatFrequencySeconds = config?.repeatFrequencySeconds || 30;
+      if (!this.shouldEmitGpsSafetyAlert(key, payload.alertType, repeatFrequencySeconds)) {
+        return;
+      }
+
+      const level = payload.level || 'warning';
+      const message = payload.message || 'GPS safety alert';
+
+      try {
+        emitToUser(userId, 'gps_safety_alert', {
+          type: 'GPS_SAFETY_ALERT',
+          alertType: payload.alertType,
+          level,
+          title: payload.title || 'GPS Safety Alert',
+          message,
+          data: {
+            authorityId,
+            agencyId,
+            ...payload.data,
+          },
+          timestamp: new Date().toISOString(),
+        });
+      } catch (_socketError) {
+        // Socket may not be initialized in non-server contexts.
+      }
+
+      await this.createGpsSafetyAlertLog(userId, authorityId, payload.alertType, level, message);
+      await logAuditEvent({
+        userId,
+        actionType: 'ALERT_TRIGGERED',
+        tableName: 'Alert_Logs',
+        recordId: Number(authorityId) || null,
+        newValue: {
+          source: 'GPS_SAFETY',
+          alertType: payload.alertType,
+          level,
+          message,
+          data: payload.data || {},
+        },
+        ipAddress: auditContext?.ipAddress,
+        deviceInfo: auditContext?.deviceInfo,
+      });
+    } catch (error) {
+      logger.error('Emit GPS safety alert error:', error);
+    }
+  }
+
+  async emitLocationReliabilityState({ userId, authorityId, agencyId, isUnreliable, reasons, pauseAuthorityAlerts, auditContext = null }) {
+    try {
+      const key = this.getGpsSafetyKey(userId, authorityId);
+      const previous = this.locationReliabilityState.get(key) || { isUnreliable: false, reasonKey: '' };
+      const reasonKey = (reasons || []).sort().join('|');
+
+      if (previous.isUnreliable === isUnreliable && previous.reasonKey === reasonKey) {
+        return;
+      }
+
+      this.locationReliabilityState.set(key, { isUnreliable, reasonKey, updatedAt: Date.now() });
+      if (isUnreliable) {
+        await this.createGpsSafetyAlertLog(
+          userId,
+          authorityId,
+          'LOCATION_UNRELIABLE',
+          'Critical',
+          `Location Unreliable mode enabled (${(reasons || []).join(', ') || 'unknown reason'})`
+        );
+      }
+
+      try {
+        emitToUser(userId, 'location_reliability', {
+          type: 'LOCATION_RELIABILITY',
+          mode: isUnreliable ? 'UNRELIABLE' : 'RELIABLE',
+          pauseAuthorityAlerts: Boolean(pauseAuthorityAlerts),
+          reasons: reasons || [],
+          authorityId: Number(authorityId) || null,
+          agencyId: Number(agencyId) || null,
+          message: isUnreliable
+            ? 'Location Unreliable mode enabled'
+            : 'Location reliability restored',
+          timestamp: new Date().toISOString(),
+        });
+      } catch (_socketError) {
+        // Socket may not be initialized in non-server contexts.
+      }
+
+      const oldValue = previous
+        ? {
+          mode: previous.isUnreliable ? 'UNRELIABLE' : 'RELIABLE',
+          reasons: previous.reasonKey ? previous.reasonKey.split('|') : [],
+        }
+        : null;
+
+      await logAuditEvent({
+        userId,
+        actionType: 'LOCATION_UNRELIABLE_MODE',
+        tableName: 'GPS_Logs',
+        recordId: Number(authorityId) || null,
+        oldValue,
+        newValue: {
+          mode: isUnreliable ? 'UNRELIABLE' : 'RELIABLE',
+          reasons: reasons || [],
+          pauseAuthorityAlerts: Boolean(pauseAuthorityAlerts),
+        },
+        ipAddress: auditContext?.ipAddress,
+        deviceInfo: auditContext?.deviceInfo,
+      });
+    } catch (error) {
+      logger.error('Emit location reliability state error:', error);
+    }
+  }
+
+  async evaluateGpsSafety(gpsData, authority) {
+    const defaultState = {
+      isUnreliable: false,
+      reasons: [],
+      pauseAuthorityAlerts: false,
+    };
+
+    try {
+      const agencyId = Number(authority?.Agency_ID);
+      const userId = Number(gpsData?.userId);
+      const authorityId = Number(authority?.Authority_ID);
+      if (!Number.isFinite(agencyId) || !Number.isFinite(userId)) {
+        return defaultState;
+      }
+
+      const config = getGpsSafetyAlertConfig(agencyId);
+      if (!config.enabled) {
+        await this.emitLocationReliabilityState({
+          userId,
+          authorityId,
+          agencyId,
+          isUnreliable: false,
+          reasons: [],
+          pauseAuthorityAlerts: false,
+          auditContext: gpsData?.auditContext || null,
+        });
+        return defaultState;
+      }
+
+      const accuracy = Number(gpsData?.accuracy);
+      const timestamp = new Date(gpsData?.timestamp || Date.now()).getTime();
+      const staleForMs = Date.now() - timestamp;
+      const staleSignal = staleForMs > (config.staleAfterSeconds * 1000);
+      const satelliteCount = Number(gpsData?.satelliteCount);
+      const explicitSignalLost = gpsData?.signalLost === true || gpsData?.hasSignal === false;
+      const satelliteLoss = explicitSignalLost || (Number.isFinite(satelliteCount) && satelliteCount <= 0);
+
+      const accuracyBreached = Number.isFinite(accuracy) && accuracy >= config.accuracyThresholdMeters;
+      const criticalAccuracy = Number.isFinite(accuracy) && accuracy >= config.criticalAccuracyThresholdMeters;
+
+      const reasons = [];
+      if (accuracyBreached) reasons.push('accuracy');
+      if (satelliteLoss) reasons.push('satellite_loss');
+      if (staleSignal) reasons.push('stale_signal');
+
+      if (config.alertTypes.accuracy && accuracyBreached) {
+        await this.emitGpsSafetyAlert(userId, authorityId, agencyId, {
+          alertType: 'GPS_ACCURACY_THRESHOLD',
+          level: criticalAccuracy ? 'critical' : 'warning',
+          title: criticalAccuracy ? 'Critical GPS Accuracy Alert' : 'GPS Accuracy Alert',
+          message: `GPS accuracy is ${accuracy.toFixed(1)}m (threshold ${config.accuracyThresholdMeters}m)`,
+          data: {
+            accuracyMeters: accuracy,
+            thresholdMeters: config.accuracyThresholdMeters,
+            criticalThresholdMeters: config.criticalAccuracyThresholdMeters,
+          },
+        }, config, gpsData?.auditContext || null);
+      }
+
+      if (config.alertTypes.satelliteLoss && satelliteLoss) {
+        await this.emitGpsSafetyAlert(userId, authorityId, agencyId, {
+          alertType: 'GPS_SATELLITE_SIGNAL_LOST',
+          level: 'critical',
+          title: 'Satellite Signal Lost',
+          message: 'GPS satellite signal appears lost',
+          data: {
+            satelliteCount: Number.isFinite(satelliteCount) ? satelliteCount : null,
+            explicitSignalLost: Boolean(explicitSignalLost),
+          },
+        }, config, gpsData?.auditContext || null);
+      }
+
+      if (config.alertTypes.staleSignal && staleSignal) {
+        await this.emitGpsSafetyAlert(userId, authorityId, agencyId, {
+          alertType: 'GPS_SIGNAL_STALE',
+          level: 'critical',
+          title: 'GPS Signal Stale',
+          message: `No reliable GPS update for ${Math.floor(staleForMs / 1000)} seconds`,
+          data: {
+            staleSeconds: Math.floor(staleForMs / 1000),
+            thresholdSeconds: config.staleAfterSeconds,
+          },
+        }, config, gpsData?.auditContext || null);
+      }
+
+      const isUnreliable = reasons.length > 0;
+      const pauseAuthorityAlerts = isUnreliable && config.pauseAuthorityAlertsOnLowAccuracy;
+
+      await this.emitLocationReliabilityState({
+        userId,
+        authorityId,
+        agencyId,
+        isUnreliable,
+        reasons,
+        pauseAuthorityAlerts,
+        auditContext: gpsData?.auditContext || null,
+      });
+
+      return {
+        isUnreliable,
+        reasons,
+        pauseAuthorityAlerts,
+      };
+    } catch (error) {
+      logger.error('Evaluate GPS safety error:', error);
+      return defaultState;
+    }
+  }
+
+  async checkStaleGpsSignals() {
+    try {
+      for (const [userId, position] of this.userPositions.entries()) {
+        const authorityId = Number(position?.authorityId);
+        if (!Number.isFinite(authorityId)) {
+          continue;
+        }
+
+        const authority = await this.getAuthoritySnapshot(authorityId);
+        if (!authority || !authority.Is_Active || !Number.isFinite(Number(authority.Agency_ID))) {
+          continue;
+        }
+
+        const config = getGpsSafetyAlertConfig(authority.Agency_ID);
+        if (!config.enabled || !config.alertTypes.staleSignal) {
+          continue;
+        }
+
+        const staleMs = Date.now() - Number(position.timestamp || 0);
+        if (staleMs <= config.staleAfterSeconds * 1000) {
+          continue;
+        }
+
+        await this.evaluateGpsSafety({
+          userId,
+          authorityId,
+          latitude: position.latitude,
+          longitude: position.longitude,
+          accuracy: null,
+          timestamp: new Date(position.timestamp || Date.now()).toISOString(),
+          signalLost: true,
+        }, authority);
+      }
+    } catch (error) {
+      logger.error('Check stale GPS signals error:', error);
+    }
+  }
+
+  async logGpsAccuracyDegradation(gpsData, authority) {
+    try {
+      const agencyId = Number(authority?.Agency_ID);
+      const userId = Number(gpsData?.userId);
+      const accuracy = Number(gpsData?.accuracy);
+      if (!Number.isFinite(agencyId) || !Number.isFinite(userId) || !Number.isFinite(accuracy)) {
+        return;
+      }
+
+      const config = getGpsAccuracyMonitoringConfig(agencyId);
+      if (!config.enabled) {
+        return;
+      }
+
+      let severity = null;
+      if (accuracy >= config.criticalThresholdMeters) {
+        severity = 'critical';
+      } else if (accuracy >= config.degradedThresholdMeters) {
+        severity = 'degraded';
+      }
+
+      const key = `${userId}:${authority.Authority_ID || 0}`;
+      const previous = this.gpsAccuracyAuditState.get(key) || null;
+      const now = Date.now();
+      const minIntervalMs = config.minIntervalSeconds * 1000;
+
+      if (!severity) {
+        if (previous?.severity) {
+          this.gpsAccuracyAuditState.set(key, { severity: null, lastLoggedAt: now });
+        }
+        return;
+      }
+
+      const shouldLog = !previous ||
+        previous.severity !== severity ||
+        (now - (previous.lastLoggedAt || 0) >= minIntervalMs);
+
+      if (!shouldLog) {
+        return;
+      }
+
+      const auditContext = gpsData?.auditContext || null;
+      const oldValue = previous?.severity
+        ? { severity: previous.severity }
+        : null;
+
+      await logAuditEvent({
+        userId,
+        actionType: 'GPS_ACCURACY_DEGRADED',
+        tableName: 'GPS_Logs',
+        recordId: Number(authority.Authority_ID) || null,
+        oldValue,
+        newValue: {
+          severity,
+          accuracyMeters: accuracy,
+          degradedThresholdMeters: config.degradedThresholdMeters,
+          criticalThresholdMeters: config.criticalThresholdMeters,
+          latitude: gpsData.latitude,
+          longitude: gpsData.longitude,
+        },
+        ipAddress: auditContext?.ipAddress,
+        deviceInfo: auditContext?.deviceInfo,
+      });
+
+      this.gpsAccuracyAuditState.set(key, { severity, lastLoggedAt: now });
+    } catch (error) {
+      logger.error('Log GPS accuracy degradation error:', error);
+    }
+  }
 }
 
 // Create singleton instance
@@ -423,5 +854,9 @@ const gpsService = new GPSService();
 setInterval(() => {
   gpsService.cleanupOldPositions();
 }, 60 * 1000);
+
+setInterval(() => {
+  gpsService.checkStaleGpsSignals();
+}, 10 * 1000);
 
 module.exports = gpsService;

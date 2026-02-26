@@ -1,6 +1,8 @@
 const AlertConfiguration = require('../models/AlertConfiguration');
 const { logger } = require('../config/logger');
 const { getConnection, sql } = require('../config/database');
+const { canAccessAgency } = require('../utils/rbac');
+const ExcelJS = require('exceljs');
 
 const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -47,7 +49,7 @@ class AlertController {
       const user = req.user;
       
       // Check if user has access to this agency
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied to this agency'
@@ -130,7 +132,7 @@ class AlertController {
       const user = req.user;
       
       // Check if user has access to this agency
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied to this agency'
@@ -355,11 +357,11 @@ class AlertController {
   async getAlertStats(req, res) {
     try {
       const { agencyId } = req.params;
-      const { days = 7 } = req.query;
+      const { days, startDate, endDate } = req.query;
       const user = req.user;
       
       // Check if user has access to this agency
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied to this agency'
@@ -367,6 +369,22 @@ class AlertController {
       }
       
       const pool = getConnection();
+      
+      // Build date filter
+      let dateFilter = '';
+      const params = { agencyId: parseInt(agencyId) };
+      
+      if (startDate && endDate) {
+        dateFilter = 'AND al.Created_Date >= @startDate AND al.Created_Date <= @endDate';
+        params.startDate = new Date(startDate + 'T00:00:00.000Z');
+        params.endDate = new Date(endDate + 'T23:59:59.999Z');
+      } else if (days) {
+        dateFilter = 'AND al.Created_Date >= DATEADD(day, -@days, GETDATE())';
+        params.days = parseInt(days);
+      } else {
+        // Default to 7 days
+        dateFilter = 'AND al.Created_Date >= DATEADD(day, -7, GETDATE())';
+      }
       
       const statsQuery = `
         SELECT 
@@ -379,15 +397,16 @@ class AlertController {
         FROM Alert_Logs al
         INNER JOIN Users u ON al.User_ID = u.User_ID
         WHERE u.Agency_ID = @agencyId
-          AND al.Created_Date >= DATEADD(day, -@days, GETDATE())
+          ${dateFilter}
         GROUP BY al.Alert_Type, al.Alert_Level
         ORDER BY count DESC
       `;
       
-      const statsResult = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .input('days', sql.Int, parseInt(days))
-        .query(statsQuery);
+      const statsRequest = pool.request();
+      Object.keys(params).forEach(key => {
+        statsRequest.input(key, params[key]);
+      });
+      const statsResult = await statsRequest.query(statsQuery);
       
       // Get alert trend by day
       const trendQuery = `
@@ -398,15 +417,16 @@ class AlertController {
         FROM Alert_Logs al
         INNER JOIN Users u ON al.User_ID = u.User_ID
         WHERE u.Agency_ID = @agencyId
-          AND al.Created_Date >= DATEADD(day, -@days, GETDATE())
+          ${dateFilter}
         GROUP BY CONVERT(DATE, al.Created_Date), al.Alert_Type
         ORDER BY alert_date DESC
       `;
       
-      const trendResult = await pool.request()
-        .input('agencyId', sql.Int, agencyId)
-        .input('days', sql.Int, parseInt(days))
-        .query(trendQuery);
+      const trendRequest = pool.request();
+      Object.keys(params).forEach(key => {
+        trendRequest.input(key, params[key]);
+      });
+      const trendResult = await trendRequest.query(trendQuery);
       
       res.json({
         success: true,
@@ -440,7 +460,7 @@ class AlertController {
       } = req.query;
       
       // Check if user has access to this agency
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied to this agency'
@@ -479,6 +499,14 @@ class AlertController {
       if (userId) {
         whereConditions.push('al.User_ID = @userId');
         params.userId = parseInt(userId);
+      }
+      
+      // Adjust dates to include full day range
+      if (params.startDate) {
+        params.startDate = new Date(startDate + 'T00:00:00.000Z');
+      }
+      if (params.endDate) {
+        params.endDate = new Date(endDate + 'T23:59:59.999Z');
       }
       
       const whereClause = whereConditions.join(' AND ');
@@ -538,6 +566,148 @@ class AlertController {
       res.status(500).json({
         success: false,
         error: 'Failed to get alert history'
+      });
+    }
+  }
+  
+  async exportAlertHistory(req, res) {
+    try {
+      const { agencyId } = req.params;
+      const user = req.user;
+      const { 
+        startDate, 
+        endDate, 
+        alertType = 'all', 
+        alertLevel = 'all', 
+        userId
+      } = req.query;
+      
+      // Check if user has access to this agency
+      if (!canAccessAgency(user, parseInt(agencyId))) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied to this agency'
+        });
+      }
+      
+      const pool = getConnection();
+      
+      let whereConditions = ['u.Agency_ID = @agencyId'];
+      const params = {
+        agencyId: parseInt(agencyId)
+      };
+      
+      if (startDate) {
+        whereConditions.push('al.Created_Date >= @startDate');
+        params.startDate = new Date(startDate + 'T00:00:00.000Z');
+      }
+      
+      if (endDate) {
+        whereConditions.push('al.Created_Date <= @endDate');
+        params.endDate = new Date(endDate + 'T23:59:59.999Z');
+      }
+      
+      if (alertType && alertType !== 'all') {
+        whereConditions.push('al.Alert_Type = @alertType');
+        params.alertType = alertType;
+      }
+      
+      if (alertLevel && alertLevel !== 'all') {
+        whereConditions.push('al.Alert_Level = @alertLevel');
+        params.alertLevel = alertLevel;
+      }
+      
+      if (userId) {
+        whereConditions.push('al.User_ID = @userId');
+        params.userId = parseInt(userId);
+      }
+      
+      const whereClause = whereConditions.join(' AND ');
+      
+      // Get all alerts (no pagination for export)
+      const query = `
+        SELECT 
+          al.*,
+          u.Username,
+          u.Employee_Name,
+          u.Email,
+          CONCAT(a.Track_Type, ' ', a.Track_Number, ': MP ', a.Begin_MP, ' - ', a.End_MP) as Authority_Description,
+          s.Subdivision_Name
+        FROM Alert_Logs al
+        INNER JOIN Users u ON al.User_ID = u.User_ID
+        INNER JOIN Authorities a ON al.Authority_ID = a.Authority_ID
+        INNER JOIN Subdivisions s ON a.Subdivision_ID = s.Subdivision_ID
+        WHERE ${whereClause}
+        ORDER BY al.Created_Date DESC
+      `;
+      
+      const request = pool.request();
+      Object.keys(params).forEach(key => {
+        request.input(key, params[key]);
+      });
+      const result = await request.query(query);
+      
+      // Create Excel workbook
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Alert History');
+      
+      // Add headers
+      worksheet.columns = [
+        { header: 'Alert ID', key: 'Alert_Log_ID', width: 12 },
+        { header: 'Date/Time', key: 'Created_Date', width: 20 },
+        { header: 'User', key: 'Username', width: 15 },
+        { header: 'Employee Name', key: 'Employee_Name', width: 20 },
+        { header: 'Subdivision', key: 'Subdivision_Name', width: 20 },
+        { header: 'Authority', key: 'Authority_Description', width: 30 },
+        { header: 'Alert Type', key: 'Alert_Type', width: 20 },
+        { header: 'Alert Level', key: 'Alert_Level', width: 12 },
+        { header: 'Distance (m)', key: 'Triggered_Distance', width: 12 },
+        { header: 'Message', key: 'Message', width: 40 },
+        { header: 'Read', key: 'Is_Read', width: 8 }
+      ];
+      
+      // Style header row
+      worksheet.getRow(1).font = { bold: true };
+      worksheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFD100' }
+      };
+      
+      // Add data rows
+      result.recordset.forEach(alert => {
+        worksheet.addRow({
+          ...alert,
+          Created_Date: new Date(alert.Created_Date).toISOString(),
+          Is_Read: alert.Is_Read ? 'Yes' : 'No'
+        });
+      });
+      
+      // Auto-filter
+      worksheet.autoFilter = {
+        from: 'A1',
+        to: 'K1'
+      };
+      
+      // Set response headers
+      res.setHeader(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename=alert_history_${new Date().toISOString().split('T')[0]}.xlsx`
+      );
+      
+      // Write to response
+      await workbook.xlsx.write(res);
+      res.end();
+      
+    } catch (error) {
+      logger.error('Export alert history error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to export alert history'
       });
     }
   }

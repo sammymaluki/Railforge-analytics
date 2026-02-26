@@ -13,7 +13,8 @@ const SCRIPTS = [
   'seed-track-numbers.js',
   'seed-pin-types.js',
   'seed-alert-configs.js',
-  'import-metrolink-data.js'
+  'import-metrolink-data.js',
+  'configure-admin-user.js'
 ];
 
 const DEV_FIXTURE_SCRIPTS = [

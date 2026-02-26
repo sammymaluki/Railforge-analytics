@@ -1,6 +1,6 @@
 // mobile/src/services/notification/NotificationService.js
 import messaging from '@react-native-firebase/messaging';
-import { Platform, PermissionsAndroid } from 'react-native';
+import { Platform, PermissionsAndroid, Vibration } from 'react-native';
 import { store } from '../../store/store';
 import databaseService from '../database/DatabaseService';
 import { showAlert } from '../../store/slices/alertSlice';
@@ -53,7 +53,7 @@ class NotificationService {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
           {
-            title: 'Sidekick Notifications',
+            title: 'RailForge Analytics Notifications',
             message: 'This app needs notification permissions to send safety alerts',
             buttonNeutral: 'Ask Me Later',
             buttonNegative: 'Cancel',
@@ -145,6 +145,14 @@ class NotificationService {
 
   async handleNotification(remoteMessage) {
     const { notification, data } = remoteMessage;
+    let notificationPolicy = null;
+    try {
+      notificationPolicy = data?.notificationPolicy
+        ? JSON.parse(data.notificationPolicy)
+        : null;
+    } catch (error) {
+      notificationPolicy = null;
+    }
 
     // Save notification to local database
     await this.saveNotification(remoteMessage);
@@ -160,7 +168,7 @@ class NotificationService {
     }));
 
     // Play sound/vibration based on alert level
-    await this.playAlertFeedback(data?.level);
+    await this.playAlertFeedback(data?.level, notificationPolicy);
 
     // Handle specific notification types
     switch (data?.type) {
@@ -172,6 +180,12 @@ class NotificationService {
         break;
       case 'boundary_alert':
         await this.handleBoundaryAlert(data);
+        break;
+      case 'gps_safety_alert':
+        await this.handleGpsSafetyAlert(data);
+        break;
+      case 'location_reliability':
+        await this.handleLocationReliability(data);
         break;
       case 'trip_report':
         await this.handleTripReport(data);
@@ -258,6 +272,34 @@ class NotificationService {
     });
   }
 
+  async handleGpsSafetyAlert(data) {
+    store.dispatch({
+      type: 'alerts/addAlert',
+      payload: {
+        type: 'gps_safety_alert',
+        level: data.level || 'critical',
+        title: 'GPS Safety Alert',
+        message: data.message || 'GPS safety condition detected',
+        data,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
+  async handleLocationReliability(data) {
+    store.dispatch({
+      type: 'alerts/addAlert',
+      payload: {
+        type: 'location_reliability',
+        level: data.mode === 'UNRELIABLE' ? 'warning' : 'informational',
+        title: 'Location Reliability',
+        message: data.message || 'Location reliability changed',
+        data,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+
   async handleTripReport(data) {
     navigationService.navigate('Reports', {
       screen: 'TripReport',
@@ -265,21 +307,42 @@ class NotificationService {
     });
   }
 
-  async playAlertFeedback(level) {
+  async playAlertFeedback(level, notificationPolicy = null) {
+    const settings = store.getState()?.settings || {};
+    const notificationsEnabled = settings.notificationsEnabled !== false;
+    const vibrationEnabled = notificationsEnabled
+      && settings.vibrationEnabled !== false
+      && notificationPolicy?.vibrationEnabled !== false;
+    const soundEnabled = notificationsEnabled
+      && settings.soundEnabled !== false
+      && notificationPolicy?.audioEnabled !== false;
+
+    if (!vibrationEnabled && !soundEnabled) {
+      return;
+    }
+
     // Implement sound/vibration based on alert level
     switch (level) {
       case 'critical':
-        // Play critical alert sound and vibrate
-        if (Platform.OS === 'android') {
-          // Use Vibration API
+        if (vibrationEnabled) {
+          Vibration.vibrate([0, 400, 200, 400]);
         }
         break;
       case 'warning':
-        // Play warning sound
+        if (vibrationEnabled) {
+          Vibration.vibrate([0, 250, 150, 250]);
+        }
         break;
       default:
-        // Play normal notification sound
+        if (vibrationEnabled) {
+          Vibration.vibrate(160);
+        }
         break;
+    }
+
+    if (soundEnabled) {
+      // Keep explicit audio playback handled by notification channels/assets.
+      console.log(`Notification sound enabled for level ${level || 'info'}`);
     }
   }
 

@@ -5,6 +5,7 @@ const { auth } = require('../middleware/auth');
 const { validate, schemas } = require('../middleware/validation');
 
 // Public routes
+router.get('/register/options', authController.getRegistrationOptions);
 router.post('/register', validate(schemas.register), authController.register);
 router.post('/login', validate(schemas.login), authController.login);
 

@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Sidekick",
-    "slug": "herzog-rail-authority",
+    "name": "RailForge Analytics",
+    "slug": "railforge-analytics",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/RF-Logo.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/RF-Logo.png",
       "resizeMode": "contain",
       "backgroundColor": "#000000"
     },
@@ -16,17 +16,17 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sidekick.app",
+      "bundleIdentifier": "com.railforge.analytics",
       "buildNumber": "1.0.0",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Sidekick tracks your GPS position to show your location on railroad tracks, calculate distance to authority limits, and provide safety alerts when you approach boundaries.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Sidekick requires continuous location access to ensure your safety while working on railroad tracks. We track your position to alert you when approaching authority limits, warn about nearby workers, and maintain a complete safety log of your movements - even when your phone is locked or the app is in background. You can stop tracking anytime by ending your active authority.",
-        "NSCameraUsageDescription": "Sidekick needs camera access to take photos for pin drops and attach images to track condition reports.",
-        "NSPhotoLibraryUsageDescription": "Sidekick needs photo library access to attach existing photos from your device to pin drops and trip reports.",
-        "NSPhotoLibraryAddUsageDescription": "Sidekick needs permission to save photos you take with the app to your photo library.",
-        "NSMotionUsageDescription": "Sidekick uses motion sensors to improve GPS accuracy and calculate your heading on tracks.",
+        "NSLocationWhenInUseUsageDescription": "RailForge Analytics tracks your GPS position to show your location on railroad tracks, calculate distance to authority limits, and provide safety alerts when you approach boundaries.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "RailForge Analytics requires continuous location access to ensure your safety while working on railroad tracks. We track your position to alert you when approaching authority limits, warn about nearby workers, and maintain a complete safety log of your movements - even when your phone is locked or the app is in background. You can stop tracking anytime by ending your active authority.",
+        "NSCameraUsageDescription": "RailForge Analytics needs camera access to take photos for pin drops and attach images to track condition reports.",
+        "NSPhotoLibraryUsageDescription": "RailForge Analytics needs photo library access to attach existing photos from your device to pin drops and trip reports.",
+        "NSPhotoLibraryAddUsageDescription": "RailForge Analytics needs permission to save photos you take with the app to your photo library.",
+        "NSMotionUsageDescription": "RailForge Analytics uses motion sensors to improve GPS accuracy and calculate your heading on tracks.",
         "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true,
+          "NSAllowsArbitraryLoads": false,
           "NSAllowsLocalNetworking": true
         },
         "UIBackgroundModes": [
@@ -49,8 +49,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
-      "usesCleartextTraffic": true,
-      "package": "com.sidekick.app",
+      "usesCleartextTraffic": false,
+      "package": "com.railforge.analytics",
       "versionCode": 1,
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
@@ -75,14 +75,14 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUseUsageDescription": "Sidekick requires continuous location access to ensure your safety while working on railroad tracks. We track your position to alert you when approaching authority limits, warn about nearby workers, and maintain a complete safety log of your movements - even when your phone is locked or the app is in background."
+          "locationAlwaysAndWhenInUseUsageDescription": "RailForge Analytics requires continuous location access to ensure your safety while working on railroad tracks. We track your position to alert you when approaching authority limits, warn about nearby workers, and maintain a complete safety log of your movements - even when your phone is locked or the app is in background."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Sidekick needs access to your photos to attach images to pin drops and trip reports for documentation purposes.",
-          "cameraPermission": "Sidekick needs camera access to take photos of track conditions and attach them to pin drops and safety reports."
+          "photosPermission": "RailForge Analytics needs access to your photos to attach images to pin drops and trip reports for documentation purposes.",
+          "cameraPermission": "RailForge Analytics needs camera access to take photos of track conditions and attach them to pin drops and safety reports."
         }
       ],
       [

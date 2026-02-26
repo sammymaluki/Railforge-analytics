@@ -5,6 +5,33 @@ class Pin extends BaseModel {
     super('Pins');
   }
 
+  normalizePhotoPayload(pinData = {}) {
+    const photoUrls = Array.isArray(pinData.photoUrls)
+      ? pinData.photoUrls
+      : Array.isArray(pinData.photos)
+        ? pinData.photos.map((photo) => photo?.url).filter(Boolean)
+        : [];
+
+    const photoMetadata = Array.isArray(pinData.photoMetadata)
+      ? pinData.photoMetadata
+      : Array.isArray(pinData.photos)
+        ? pinData.photos
+          .map((photo) => photo?.metadata || null)
+          .filter((metadata) => Boolean(metadata))
+        : [];
+
+    const fallbackPhotoUrl =
+      pinData.photoUrl ||
+      photoUrls[0] ||
+      null;
+
+    return {
+      photoUrl: fallbackPhotoUrl,
+      photoUrlsJson: photoUrls.length ? JSON.stringify(photoUrls) : null,
+      photoMetadataJson: photoMetadata.length ? JSON.stringify(photoMetadata) : null
+    };
+  }
+
   async create(pinData) {
     const {
       authorityId,
@@ -14,19 +41,20 @@ class Pin extends BaseModel {
       trackType = null,
       trackNumber = null,
       mp = null,
-      notes = null,
-      photoUrl = null
+      notes = null
     } = pinData;
+
+    const { photoUrl, photoUrlsJson, photoMetadataJson } = this.normalizePhotoPayload(pinData);
 
     const query = `
       INSERT INTO Pins (
         Authority_ID, Pin_Type_ID, Latitude, Longitude,
-        Track_Type, Track_Number, MP, Notes, Photo_URL
+        Track_Type, Track_Number, MP, Notes, Photo_URL, Photo_URLs, Photo_Metadata
       )
       OUTPUT INSERTED.*
       VALUES (
         @authorityId, @pinTypeId, @latitude, @longitude,
-        @trackType, @trackNumber, @mp, @notes, @photoUrl
+        @trackType, @trackNumber, @mp, @notes, @photoUrl, @photoUrlsJson, @photoMetadataJson
       )
     `;
 
@@ -39,7 +67,9 @@ class Pin extends BaseModel {
       trackNumber,
       mp,
       notes,
-      photoUrl
+      photoUrl,
+      photoUrlsJson,
+      photoMetadataJson
     });
 
     return result.recordset[0];
@@ -52,7 +82,9 @@ class Pin extends BaseModel {
         pt.Pin_Category,
         pt.Pin_Subtype,
         pt.Color,
-        pt.Icon_URL
+        pt.Icon_URL,
+        pt.Photo_Access_Roles,
+        pt.Photo_Export_Mode
       FROM Pins p
       INNER JOIN Pin_Types pt ON p.Pin_Type_ID = pt.Pin_Type_ID
       WHERE p.Authority_ID = @authorityId
@@ -70,6 +102,8 @@ class Pin extends BaseModel {
         pt.Pin_Category,
         pt.Pin_Subtype,
         pt.Color,
+        pt.Photo_Access_Roles,
+        pt.Photo_Export_Mode,
         a.Begin_MP,
         a.End_MP,
         a.Track_Type,
@@ -99,9 +133,10 @@ class Pin extends BaseModel {
       trackType = null,
       trackNumber = null,
       mp = null,
-      notes = null,
-      photoUrl = null
+      notes = null
     } = pinData;
+
+    const { photoUrl, photoUrlsJson, photoMetadataJson } = this.normalizePhotoPayload(pinData);
 
     const query = `
       UPDATE Pins
@@ -113,7 +148,9 @@ class Pin extends BaseModel {
         Track_Number = @trackNumber,
         MP = @mp,
         Notes = @notes,
-        Photo_URL = @photoUrl,
+        Photo_URL = COALESCE(@photoUrl, Photo_URL),
+        Photo_URLs = COALESCE(@photoUrlsJson, Photo_URLs),
+        Photo_Metadata = COALESCE(@photoMetadataJson, Photo_Metadata),
         Modified_Date = GETDATE()
       OUTPUT INSERTED.*
       WHERE Pin_ID = @pinId
@@ -128,7 +165,9 @@ class Pin extends BaseModel {
       trackNumber,
       mp,
       notes,
-      photoUrl
+      photoUrl,
+      photoUrlsJson,
+      photoMetadataJson
     });
 
     return result.recordset[0] || null;

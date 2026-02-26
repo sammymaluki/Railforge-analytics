@@ -10,8 +10,10 @@ class UploadController {
     this.uploadPinPhoto = this.uploadPinPhoto.bind(this);
     this.uploadTrackData = this.uploadTrackData.bind(this);
     this.uploadMilepostGeometry = this.uploadMilepostGeometry.bind(this);
+    this.uploadUsers = this.uploadUsers.bind(this);
     this.downloadTrackTemplate = this.downloadTrackTemplate.bind(this);
     this.downloadMilepostTemplate = this.downloadMilepostTemplate.bind(this);
+    this.downloadUsersTemplate = this.downloadUsersTemplate.bind(this);
     this.processTrackData = this.processTrackData.bind(this);
     this.processMilepostData = this.processMilepostData.bind(this);
   }
@@ -26,8 +28,41 @@ class UploadController {
       }
 
       const user = req.user;
-      const { authorityId, pinId } = req.body;
+      const { authorityId, pinId, pinTypeId } = req.body;
       const pool = getConnection();
+
+      if (pinTypeId) {
+        const pinTypeResult = await pool.request()
+          .input('pinTypeId', sql.Int, pinTypeId)
+          .query(`
+            SELECT TOP 1 Photos_Enabled, Max_Photo_Size_MB
+            FROM Pin_Types
+            WHERE Pin_Type_ID = @pinTypeId
+              AND Is_Active = 1
+          `);
+
+        const pinType = pinTypeResult.recordset[0];
+        if (pinType) {
+          if (pinType.Photos_Enabled === false) {
+            const fs = require('fs');
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({
+              success: false,
+              error: 'Photos are disabled for this category'
+            });
+          }
+
+          const maxBytes = Number(pinType.Max_Photo_Size_MB || 10) * 1024 * 1024;
+          if (req.file.size > maxBytes) {
+            const fs = require('fs');
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({
+              success: false,
+              error: `Photo exceeds max size of ${pinType.Max_Photo_Size_MB}MB for this category`
+            });
+          }
+        }
+      }
 
       // Verify authority belongs to user if authorityId is provided
       if (authorityId) {
@@ -406,7 +441,7 @@ class UploadController {
       }
 
       // Only administrators can upload milepost geometry
-      if (req.user.role !== 'Administrator') {
+      if (req.user.Role !== 'Administrator') {
         return res.status(403).json({
           success: false,
           message: 'Only administrators can upload milepost geometry'
@@ -494,7 +529,7 @@ class UploadController {
 
         await transaction.commit();
 
-        logger.info(`Milepost geometry uploaded: ${insertedCount} records by user ${req.user.userId}`);
+        logger.info(`Milepost geometry uploaded: ${insertedCount} records by user ${req.user.User_ID}`);
 
         res.json({
           success: true,
@@ -571,6 +606,162 @@ class UploadController {
       res.status(500).json({
         success: false,
         message: 'Failed to generate template',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Download users import template
+   */
+  async downloadUsersTemplate(req, res) {
+    try {
+      const templateData = dataValidationService.generateUsersTemplate();
+      
+      // Create workbook
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(templateData);
+      XLSX.utils.book_append_sheet(wb, ws, 'Users');
+
+      // Generate buffer
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+      res.setHeader('Content-Disposition', 'attachment; filename=users_template.xlsx');
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.send(buffer);
+    } catch (error) {
+      logger.error('Error generating users template:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to generate template',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Upload and import users
+   */
+  async uploadUsers(req, res) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'No file uploaded'
+        });
+      }
+
+      const user = req.user;
+      
+      // Check if user is administrator
+      if (user.Role !== 'Administrator') {
+        return res.status(403).json({
+          success: false,
+          message: 'Only administrators can import users'
+        });
+      }
+
+      // Parse file
+      const workbook = XLSX.read(req.file.buffer);
+      const sheetName = workbook.SheetNames[0];
+      const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+      if (!data || data.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'No data found in file'
+        });
+      }
+
+      const pool = getConnection();
+      const results = {
+        successful: 0,
+        failed: 0,
+        errors: []
+      };
+
+      // Process each user record
+      for (let i = 0; i < data.length; i++) {
+        try {
+          const row = data[i];
+          const { Username, Email, Full_Name, Role, Agency_CD } = row;
+
+          // Validate required fields
+          if (!Username || !Email || !Full_Name) {
+            results.failed += 1;
+            results.errors.push(`Row ${i + 2}: Missing required fields (Username, Email, Full_Name)`);
+            continue;
+          }
+
+          // Validate role
+          const validRoles = ['Administrator', 'Supervisor', 'Field_Worker', 'Viewer'];
+          if (!validRoles.includes(Role)) {
+            results.failed += 1;
+            results.errors.push(`Row ${i + 2}: Invalid role "${Role}"`);
+            continue;
+          }
+
+          // Get agency by code
+          const agencyRequest = pool.request()
+            .input('Agency_CD', sql.VarChar(10), Agency_CD);
+          const agencyResult = await agencyRequest.query('SELECT Agency_ID FROM Agencies WHERE Agency_CD = @Agency_CD');
+          
+          if (agencyResult.recordset.length === 0) {
+            results.failed += 1;
+            results.errors.push(`Row ${i + 2}: Agency code "${Agency_CD}" not found`);
+            continue;
+          }
+
+          const agencyId = agencyResult.recordset[0].Agency_ID;
+
+          // Check if username already exists
+          const checkRequest = pool.request()
+            .input('Username', sql.NVarChar(100), Username);
+          const checkResult = await checkRequest.query('SELECT User_ID FROM Users WHERE Username = @Username');
+
+          if (checkResult.recordset.length > 0) {
+            results.failed += 1;
+            results.errors.push(`Row ${i + 2}: Username "${Username}" already exists`);
+            continue;
+          }
+
+          // Generate temporary password (simple hash)
+          const crypto = require('crypto');
+          const tempPassword = crypto.randomBytes(8).toString('hex');
+          const hashedPassword = crypto.createHash('sha256').update(tempPassword).digest('hex');
+
+          // Insert new user
+          const insertRequest = pool.request()
+            .input('Username', sql.NVarChar(100), Username)
+            .input('Email', sql.VarChar(100), Email)
+            .input('Employee_Name', sql.NVarChar(100), Full_Name)
+            .input('Password_Hash', sql.VarChar(255), hashedPassword)
+            .input('Role', sql.VarChar(20), Role)
+            .input('Agency_ID', sql.Int, agencyId)
+            .input('Is_Active', sql.Bit, 1);
+
+          await insertRequest.query(`
+            INSERT INTO Users (Username, Email, Employee_Name, Password_Hash, Role, Agency_ID, Is_Active)
+            VALUES (@Username, @Email, @Employee_Name, @Password_Hash, @Role, @Agency_ID, @Is_Active)
+          `);
+
+          results.successful += 1;
+        } catch (rowError) {
+          results.failed += 1;
+          results.errors.push(`Row ${i + 2}: ${rowError.message}`);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Users import completed: ${results.successful} successful, ${results.failed} failed`,
+        data: results
+      });
+    } catch (error) {
+      logger.error('Upload users error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to upload users',
         error: error.message
       });
     }

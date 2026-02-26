@@ -1,5 +1,5 @@
 -- Add Track_Type, Track_Number, Is_Active to Milepost_Geometry if missing
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 IF COL_LENGTH('Milepost_Geometry', 'Track_Type') IS NULL

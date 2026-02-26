@@ -2,6 +2,7 @@ const BrandingConfiguration = require('../models/BrandingConfiguration');
 const { logger } = require('../config/logger');
 const path = require('path');
 const fs = require('fs').promises;
+const { canAccessAgency } = require('../utils/rbac');
 
 class BrandingController {
   /**
@@ -13,7 +14,7 @@ class BrandingController {
       const user = req.user;
 
       // Verify access (users can only access their own agency's branding unless admin)
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'
@@ -231,7 +232,7 @@ class BrandingController {
       const { agencyId } = req.params;
       const user = req.user;
 
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'

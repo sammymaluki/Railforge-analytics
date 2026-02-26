@@ -1,5 +1,10 @@
 const db = require('../config/database');
 const { sql } = require('../config/database');
+const {
+  getFieldConfigurations,
+  getMilepostDecimalPlaces,
+  getMilepostInterpolationConfig
+} = require('../services/agencyConfigService');
 
 const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,10 +85,116 @@ const getInterpolateSchemaFlags = async (forceRefresh = false) => {
   return interpolateSchemaCache;
 };
 
+const getPrecisionFromRequest = (req) => {
+  const rawPrecision = req.body?.precision ?? req.query?.precision;
+  const parsedPrecision = Number.parseInt(rawPrecision, 10);
+  if (Number.isFinite(parsedPrecision)) {
+    return Math.max(0, Math.min(6, parsedPrecision));
+  }
+  return getMilepostDecimalPlaces(req.user?.Agency_ID);
+};
+
+const roundToPrecision = (value, precision) => {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number.parseFloat(parsed.toFixed(precision));
+};
+
+const normalizeInterpolationSource = (value) => {
+  const normalized = String(value || '').toLowerCase();
+  if (['auto', 'track_mileposts', 'milepost_geometry'].includes(normalized)) {
+    return normalized;
+  }
+  return 'auto';
+};
+
 /**
  * Track and Milepost Controller
  * Handles track-based distance calculations and milepost interpolation
  */
+
+/**
+ * Get structured track-search options for a subdivision
+ * GET /tracks/search-options?subdivisionId=123
+ */
+exports.getTrackSearchOptions = async (req, res) => {
+  try {
+    const agencyId = req.user.Agency_ID;
+    const subdivisionId = Number.parseInt(req.query.subdivisionId, 10);
+    const hasSubdivisionFilter = Number.isFinite(subdivisionId);
+    const subdivisionFilter = hasSubdivisionFilter ? 'AND t.Subdivision_ID = @Subdivision_ID' : '';
+
+    const baseRequestBuilder = () => {
+      const request = new db.Request()
+        .input('Agency_ID', db.Int, agencyId);
+      if (hasSubdivisionFilter) {
+        request.input('Subdivision_ID', db.Int, subdivisionId);
+      }
+      return request;
+    };
+
+    const lineSegmentResult = await baseRequestBuilder().query(`
+      SELECT DISTINCT LTRIM(RTRIM(t.LS)) AS Value
+      FROM Tracks t
+      INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
+      WHERE s.Agency_ID = @Agency_ID
+        ${subdivisionFilter}
+        AND t.LS IS NOT NULL
+        AND LTRIM(RTRIM(t.LS)) <> ''
+      ORDER BY Value
+    `);
+
+    const trackTypeResult = await baseRequestBuilder().query(`
+      SELECT DISTINCT LTRIM(RTRIM(t.Track_Type)) AS Value
+      FROM Tracks t
+      INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
+      WHERE s.Agency_ID = @Agency_ID
+        ${subdivisionFilter}
+        AND t.Track_Type IS NOT NULL
+        AND LTRIM(RTRIM(t.Track_Type)) <> ''
+      ORDER BY Value
+    `);
+
+    const trackNumberResult = await baseRequestBuilder().query(`
+      SELECT DISTINCT LTRIM(RTRIM(t.Track_Number)) AS Value
+      FROM Tracks t
+      INNER JOIN Subdivisions s ON t.Subdivision_ID = s.Subdivision_ID
+      WHERE s.Agency_ID = @Agency_ID
+        ${subdivisionFilter}
+        AND t.Track_Number IS NOT NULL
+        AND LTRIM(RTRIM(t.Track_Number)) <> ''
+      ORDER BY Value
+    `);
+
+    const configs = getFieldConfigurations(agencyId);
+
+    const mergeUnique = (dbRows = [], configured = []) => {
+      const values = new Set();
+      dbRows.forEach((row) => {
+        if (row?.Value) values.add(String(row.Value));
+      });
+      (configured || []).forEach((value) => {
+        if (value) values.add(String(value));
+      });
+      return Array.from(values).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    };
+
+    res.json({
+      success: true,
+      data: {
+        subdivisionId: hasSubdivisionFilter ? subdivisionId : null,
+        lineSegments: mergeUnique(lineSegmentResult.recordset, configs?.lineSegment?.options),
+        trackTypes: mergeUnique(trackTypeResult.recordset, configs?.trackType?.options),
+        trackNumbers: mergeUnique(trackNumberResult.recordset, configs?.trackNumber?.options),
+        milepostPrecision: getMilepostDecimalPlaces(agencyId),
+        interpolation: getMilepostInterpolationConfig(agencyId),
+      },
+    });
+  } catch (error) {
+    console.error('Get track search options error:', error);
+    res.status(500).json({ success: false, error: 'Failed to load track search options' });
+  }
+};
 
 /**
  * Get milepost reference data for a subdivision
@@ -186,6 +297,11 @@ exports.calculateDistance = async (req, res) => {
 exports.interpolateMilepost = async (req, res) => {
   try {
     const { latitude, longitude, subdivisionId } = req.body;
+    const precision = getPrecisionFromRequest(req);
+    const interpolationConfig = getMilepostInterpolationConfig(req.user?.Agency_ID);
+    const source = normalizeInterpolationSource(
+      req.body?.source ?? req.query?.source ?? interpolationConfig.anchorSource
+    );
 
     // Validate inputs
     if (!latitude || !longitude || !subdivisionId) {
@@ -202,56 +318,31 @@ exports.interpolateMilepost = async (req, res) => {
       .input('Latitude', sql.Float, latitude)
       .input('Longitude', sql.Float, longitude);
 
-    let result = hasTrackMileposts
-      ? await runQueryWithRetry(
-        (pool) => buildRequest(pool),
-        `
-          SELECT TOP 10
-            Milepost,
-            Latitude,
-            Longitude,
-            (
-              6371 * 2 * ASIN(
-                SQRT(
-                  POWER(SIN((RADIANS(Latitude) - RADIANS(@Latitude)) / 2), 2) +
-                  COS(RADIANS(@Latitude)) * COS(RADIANS(Latitude)) *
-                  POWER(SIN((RADIANS(Longitude) - RADIANS(@Longitude)) / 2), 2)
-                )
+    const queryTrackMileposts = async () => runQueryWithRetry(
+      (pool) => buildRequest(pool),
+      `
+        SELECT TOP 10
+          Milepost,
+          Latitude,
+          Longitude,
+          (
+            6371 * 2 * ASIN(
+              SQRT(
+                POWER(SIN((RADIANS(Latitude) - RADIANS(@Latitude)) / 2), 2) +
+                COS(RADIANS(@Latitude)) * COS(RADIANS(Latitude)) *
+                POWER(SIN((RADIANS(Longitude) - RADIANS(@Longitude)) / 2), 2)
               )
-            ) * 0.621371 AS Distance_Miles
-          FROM Track_Mileposts
-          WHERE Subdivision_ID = @Subdivision_ID
-          ORDER BY Distance_Miles
-        `,
-        'interpolateMilepost.trackMileposts'
-      )
-      : await runQueryWithRetry(
-        (pool) => buildRequest(pool),
-        `
-          SELECT TOP 10
-            MP AS Milepost,
-            Latitude,
-            Longitude,
-            (
-              6371 * 2 * ASIN(
-                SQRT(
-                  POWER(SIN((RADIANS(Latitude) - RADIANS(@Latitude)) / 2), 2) +
-                  COS(RADIANS(@Latitude)) * COS(RADIANS(Latitude)) *
-                  POWER(SIN((RADIANS(Longitude) - RADIANS(@Longitude)) / 2), 2)
-                )
-              )
-            ) * 0.621371 AS Distance_Miles
-          FROM Milepost_Geometry
-          WHERE Subdivision_ID = @Subdivision_ID
-            ${hasMPIsActive ? 'AND Is_Active = 1' : ''}
-          ORDER BY Distance_Miles
-        `,
-        'interpolateMilepost.milepostGeometryPrimary'
-      );
+            )
+          ) * 0.621371 AS Distance_Miles
+        FROM Track_Mileposts
+        WHERE Subdivision_ID = @Subdivision_ID
+        ORDER BY Distance_Miles
+      `,
+      'interpolateMilepost.trackMileposts'
+    );
 
-    // Fallback: Track_Mileposts can exist but be empty for some agencies.
-    if (hasTrackMileposts && result.recordset.length === 0) {
-      result = await runQueryWithRetry(
+    const queryMilepostGeometry = async (context = 'interpolateMilepost.milepostGeometryPrimary') =>
+      runQueryWithRetry(
         (pool) => buildRequest(pool),
         `
         SELECT TOP 10
@@ -272,8 +363,25 @@ exports.interpolateMilepost = async (req, res) => {
           ${hasMPIsActive ? 'AND Is_Active = 1' : ''}
         ORDER BY Distance_Miles
       `,
-        'interpolateMilepost.milepostGeometryFallback'
+        context
       );
+
+    let result;
+    if (source === 'track_mileposts') {
+      if (!hasTrackMileposts) {
+        return res.status(404).json({ error: 'Track_Mileposts anchors not available' });
+      }
+      result = await queryTrackMileposts();
+    } else if (source === 'milepost_geometry') {
+      result = await queryMilepostGeometry();
+    } else if (hasTrackMileposts) {
+      result = await queryTrackMileposts();
+      // Auto fallback: Track_Mileposts can exist but be empty for some agencies.
+      if (result.recordset.length === 0) {
+        result = await queryMilepostGeometry('interpolateMilepost.milepostGeometryFallback');
+      }
+    } else {
+      result = await queryMilepostGeometry();
     }
 
     const nearbyPoints = result.recordset;
@@ -287,9 +395,10 @@ exports.interpolateMilepost = async (req, res) => {
     // If very close to a reference point, use it directly
     if (closest.Distance_Miles < 0.01) {
       return res.json({
-        milepost: parseFloat(closest.Milepost),
+        milepost: roundToPrecision(closest.Milepost, precision),
         distance: closest.Distance_Miles,
         method: 'exact',
+        source,
       });
     }
 
@@ -306,17 +415,19 @@ exports.interpolateMilepost = async (req, res) => {
         (parseFloat(p1.Milepost) * weight1 + parseFloat(p2.Milepost) * weight2) / totalWeight;
 
       return res.json({
-        milepost: Math.round(interpolated * 100) / 100,
+        milepost: roundToPrecision(interpolated, precision),
         distance: closest.Distance_Miles,
         method: 'interpolated',
+        source,
       });
     }
 
     // Fallback to closest point
     res.json({
-      milepost: parseFloat(closest.Milepost),
+      milepost: roundToPrecision(closest.Milepost, precision),
       distance: closest.Distance_Miles,
       method: 'closest',
+      source,
     });
   } catch (error) {
     console.error('Interpolate milepost error:', error);
@@ -332,6 +443,7 @@ exports.interpolateMilepost = async (req, res) => {
 exports.searchTrackLocation = async (req, res) => {
   try {
     const { subdivisionId, milepost, ls, trackType, trackNumber } = req.body;
+    const precision = getPrecisionFromRequest(req);
 
     if (!subdivisionId || milepost === undefined || milepost === null) {
       return res.status(400).json({
@@ -431,12 +543,13 @@ exports.searchTrackLocation = async (req, res) => {
       data: {
         subdivisionId,
         lineSegment: trackRow?.LS || ls || null,
-        milepost: parseFloat(milepostRow.MP),
+        milepost: roundToPrecision(milepostRow.MP, precision),
         latitude: parseFloat(milepostRow.Latitude),
         longitude: parseFloat(milepostRow.Longitude),
         trackType: milepostRow.Track_Type || trackType || trackRow?.Track_Type || null,
         trackNumber: milepostRow.Track_Number || trackNumber || trackRow?.Track_Number || null,
         track: trackRow,
+        milepostPrecision: precision,
       },
     });
   } catch (error) {

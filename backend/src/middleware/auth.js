@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { logger } = require('../config/logger');
+const { canAccessAgency, getAdminScope, isGlobalAdmin } = require('../utils/rbac');
 
 const authUserCache = new Map();
 const AUTH_USER_CACHE_TTL_MS = 30000;
@@ -53,6 +54,8 @@ const auth = async (req, res, next) => {
     }
 
     // Attach user and token to request
+    user.Admin_Scope = getAdminScope(user);
+    user.Is_Global_Admin = isGlobalAdmin(user);
     req.user = user;
     req.token = token;
     next();
@@ -112,16 +115,11 @@ const authorize = (...roles) => {
 
 const agencyAccess = async (req, res, next) => {
   try {
-    const userAgencyId = req.user.Agency_ID;
+    const userAgencyId = Number(req.user.Agency_ID);
     const requestedAgencyId = req.params.agencyId || req.body.agencyId;
 
-    // Administrators can access all agencies
-    if (req.user.Role === 'Administrator') {
-      return next();
-    }
-
     // Users can only access their own agency
-    if (requestedAgencyId && parseInt(requestedAgencyId) !== userAgencyId) {
+    if (requestedAgencyId && !canAccessAgency(req.user, Number(requestedAgencyId))) {
       return res.status(403).json({
         success: false,
         error: 'Access denied to this agency'
@@ -129,7 +127,7 @@ const agencyAccess = async (req, res, next) => {
     }
 
     // If no agency specified, default to user's agency
-    if (!req.params.agencyId && !req.body.agencyId) {
+    if (!req.params.agencyId && !req.body.agencyId && Number.isFinite(userAgencyId)) {
       req.params.agencyId = userAgencyId;
     }
 
@@ -141,6 +139,26 @@ const agencyAccess = async (req, res, next) => {
       error: 'Access denied'
     });
   }
+};
+
+const authorizeGlobalAdmin = () => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Authentication required'
+      });
+    }
+
+    if (!isGlobalAdmin(req.user)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied. Super administrator access required.'
+      });
+    }
+
+    next();
+  };
 };
 
 const generateToken = (user) => {
@@ -161,5 +179,6 @@ module.exports = {
   auth,
   authorize,
   agencyAccess,
+  authorizeGlobalAdmin,
   generateToken
 };

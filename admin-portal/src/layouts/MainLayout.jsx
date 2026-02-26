@@ -38,6 +38,7 @@ import {
 } from '@mui/icons-material';
 import { useSelector, useDispatch } from 'react-redux';
 import { logout } from '../store/slices/authSlice';
+import { getAgencyId, isGlobalAdmin } from '../utils/rbac';
 
 const drawerWidth = 260;
 
@@ -46,6 +47,8 @@ const MainLayout = () => {
   const location = useLocation();
   const dispatch = useDispatch();
   const { user } = useSelector((state) => state.auth);
+  const globalAdmin = isGlobalAdmin(user);
+  const userAgencyId = getAgencyId(user);
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [anchorEl, setAnchorEl] = useState(null);
@@ -79,7 +82,7 @@ const MainLayout = () => {
 
   const menuItems = [
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
-    { text: 'Agencies', icon: <BusinessIcon />, path: '/agencies' },
+    ...(globalAdmin ? [{ text: 'Agencies', icon: <BusinessIcon />, path: '/agencies' }] : []),
     { text: 'Users', icon: <PeopleIcon />, path: '/users' },
     { text: 'Authorities', icon: <AssignmentIcon />, path: '/authorities' },
     { text: 'Alerts', icon: <NotificationsIcon />, path: '/alerts' },
@@ -98,25 +101,19 @@ const MainLayout = () => {
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Toolbar sx={{ bgcolor: '#000', borderBottom: '2px solid #FFD100' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Box
-            sx={{
-              width: 40,
-              height: 40,
-              bgcolor: '#FFD100',
-              borderRadius: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontWeight: 'bold',
-              color: '#000',
-              fontSize: '1.2rem'
-            }}
-          >
-            H
+          <img 
+            src="/RF-Logo.png" 
+            alt="RailForge Analytics" 
+            style={{ height: 40, width: 'auto' }}
+          />
+          <Box>
+            <Typography variant="h6" noWrap component="div" fontWeight="bold">
+              RailForge Analytics
+            </Typography>
+            <Typography variant="caption" sx={{ fontSize: '0.7rem', color: '#FFD100' }}>
+              Forging data into safer rail operations
+            </Typography>
           </Box>
-          <Typography variant="h6" noWrap component="div" fontWeight="bold">
-            Herzog Rail
-          </Typography>
         </Box>
       </Toolbar>
 
@@ -209,14 +206,14 @@ const MainLayout = () => {
       <Box sx={{ p: 2, bgcolor: '#1E1E1E' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <Avatar sx={{ bgcolor: '#FFD100', color: '#000', width: 36, height: 36 }}>
-            {user?.name?.charAt(0) || 'A'}
+              {(user?.Employee_Name || user?.name || 'A').charAt(0)}
           </Avatar>
           <Box sx={{ flexGrow: 1, minWidth: 0 }}>
             <Typography variant="body2" noWrap fontWeight={600}>
-              {user?.name || 'Admin User'}
+              {user?.Employee_Name || user?.name || 'Admin User'}
             </Typography>
             <Typography variant="caption" color="textSecondary" noWrap>
-              {user?.email || 'admin@herzog.com'}
+              {user?.Email || user?.email || 'admin@herzog.com'}
             </Typography>
           </Box>
         </Box>
@@ -270,10 +267,10 @@ const MainLayout = () => {
             <MenuItem disabled>
               <Box>
                 <Typography variant="body2" fontWeight={600}>
-                  {user?.name || 'Admin User'}
+                  {user?.Employee_Name || user?.name || 'Admin User'}
                 </Typography>
                 <Typography variant="caption" color="textSecondary">
-                  {user?.role || 'Administrator'}
+                  {user?.Role || user?.role || 'Administrator'}{userAgencyId ? ` • Agency ${userAgencyId}` : ''}
                 </Typography>
               </Box>
             </MenuItem>

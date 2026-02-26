@@ -36,14 +36,16 @@ async function processQueue(batchSize = 50) {
           insertReq.input('mp', sql.Decimal(10,4), data.mp || data.MP || null);
           insertReq.input('notes', sql.NVarChar, data.notes || data.Notes || null);
           insertReq.input('photoUrl', sql.NVarChar, data.photoUrl || data.Photo_URL || null);
+          insertReq.input('photoUrls', sql.NVarChar(sql.MAX), data.photoUrls ? JSON.stringify(data.photoUrls) : (data.Photo_URLs || null));
+          insertReq.input('photoMetadata', sql.NVarChar(sql.MAX), data.photoMetadata ? JSON.stringify(data.photoMetadata) : (data.Photo_Metadata || null));
 
           const insertResult = await insertReq.query(`
             INSERT INTO Pins (
               Authority_ID, Pin_Type_ID, Latitude, Longitude,
-              Track_Type, Track_Number, MP, Notes, Photo_URL
+              Track_Type, Track_Number, MP, Notes, Photo_URL, Photo_URLs, Photo_Metadata
             ) OUTPUT INSERTED.Pin_ID VALUES (
               @authorityId, @pinTypeId, @latitude, @longitude,
-              @trackType, @trackNumber, @mp, @notes, @photoUrl
+              @trackType, @trackNumber, @mp, @notes, @photoUrl, @photoUrls, @photoMetadata
             )
           `);
 

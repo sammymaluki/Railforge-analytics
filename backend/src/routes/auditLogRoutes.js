@@ -21,4 +21,9 @@ router.get('/:agencyId/affected-tables', auditLogController.getAffectedTables);
 // Export audit logs to Excel
 router.get('/:agencyId/export', auditLogController.exportAuditLogs);
 
+// Retention policy controls
+router.get('/:agencyId/retention-policy', auditLogController.getAuditRetentionPolicy);
+router.put('/:agencyId/retention-policy', auditLogController.updateAuditRetentionPolicy);
+router.post('/:agencyId/retention-run', auditLogController.runAuditRetention);
+
 module.exports = router;

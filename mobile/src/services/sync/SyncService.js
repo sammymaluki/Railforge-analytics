@@ -10,16 +10,19 @@ class SyncService {
     this.networkState = null;
     this.lastSuccessfulSync = null;
     this.retryCount = 0;
+    this.netInfoUnsubscribe = null;
   }
 
   async init() {
     // Monitor network state
     this.networkState = await NetInfo.fetch();
     
-    NetInfo.addEventListener(state => {
+    this.netInfoUnsubscribe = NetInfo.addEventListener(state => {
+      const wasConnected = Boolean(this.networkState?.isConnected && this.networkState?.isInternetReachable);
+      const nowConnected = Boolean(state?.isConnected && state?.isInternetReachable);
       this.networkState = state;
       
-      if (state.isConnected && !state.isInternetReachable) {
+      if (!wasConnected && nowConnected) {
         this.startSyncing();
       }
     });
@@ -304,6 +307,10 @@ class SyncService {
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
+    }
+    if (this.netInfoUnsubscribe) {
+      this.netInfoUnsubscribe();
+      this.netInfoUnsubscribe = null;
     }
   }
 }

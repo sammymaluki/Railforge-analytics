@@ -1,5 +1,5 @@
 -- Initial database schema based on provided requirements
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- 1. Agencies Table

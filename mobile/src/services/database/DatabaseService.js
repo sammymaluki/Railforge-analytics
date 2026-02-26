@@ -38,8 +38,7 @@ class DatabaseService {
   }
 
   async executeQuery(query, params = []) {
-    // Mock query execution
-    console.log('Mock query:', query);
+    // Query execution - data comes from backend API, not local DB
     return { rows: { length: 0, item: () => null } };
   }
 

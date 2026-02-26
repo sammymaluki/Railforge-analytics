@@ -287,6 +287,37 @@ class ApiService {
     }
   }
 
+  async getAuthorityFieldConfigurations(agencyId) {
+    try {
+      const response = await this.api.get(`/config/agencies/${agencyId}/authority-config/fields`);
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async getAuthorityValidationRules(agencyId) {
+    try {
+      const response = await this.api.get(`/config/agencies/${agencyId}/authority-config/validation`);
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
+  async getTrackSearchOptions(subdivisionId = null) {
+    try {
+      const response = await this.api.get('/tracks/search-options', {
+        params: {
+          subdivisionId: subdivisionId || undefined,
+        },
+      });
+      return response.data;
+    } catch (error) {
+      throw this.handleError(error);
+    }
+  }
+
   // Authority endpoints
   async createAuthority(authorityData) {
     try {
@@ -376,7 +407,11 @@ class ApiService {
   // GPS endpoints
   async updateGPSPosition(gpsData) {
     try {
-      const response = await this.api.post('/gps/update', gpsData);
+      const response = await this.requestWithRetry(
+        () => this.api.post('/gps/update', gpsData),
+        3,
+        600
+      );
       return response.data;
     } catch (error) {
       throw this.handleError(error);
@@ -490,6 +525,20 @@ class ApiService {
       return response.data?.data;
     } catch (error) {
       throw this.handleError(error);
+    }
+  }
+
+  async getAuthorityBoundary(authorityId) {
+    try {
+      const response = await this.requestWithRetry(
+        () => this.api.get(`/map/authority/${authorityId}/boundary`),
+        3,
+        600
+      );
+      return response.data?.data;
+    } catch (error) {
+      console.warn('Failed to load authority boundary:', error);
+      return null; // Return null if boundary not available
     }
   }
 

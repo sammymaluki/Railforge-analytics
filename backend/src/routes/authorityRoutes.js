@@ -30,7 +30,6 @@ router.post('/overlaps/:overlapId/resolve', authorize('Administrator', 'Supervis
 
 // Create authority
 router.post('/', authorize('Field_Worker', 'Supervisor', 'Administrator'), 
-  validate(schemas.createAuthority), 
   authorityController.createAuthority
 );
 

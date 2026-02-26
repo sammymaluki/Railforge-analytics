@@ -1,5 +1,20 @@
 const pinTypeModel = require('../models/PinType');
 const { logger } = require('../config/logger');
+const { canAccessAgency } = require('../utils/rbac');
+
+const normalizePhotoAccessRoles = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((role) => String(role).trim()).filter(Boolean).join(',');
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((role) => role.trim())
+      .filter(Boolean)
+      .join(',');
+  }
+  return 'Administrator,Supervisor,Field_Worker';
+};
 
 /**
  * Get all pin types for an agency
@@ -9,7 +24,7 @@ const getPinTypes = async (req, res) => {
     const { agencyId } = req.params;
 
     // Check authorization - users can only view their agency's pin types
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied to this agency\'s pin types'
@@ -41,10 +56,24 @@ const getPinTypes = async (req, res) => {
 const createPinType = async (req, res) => {
   try {
     const { agencyId } = req.params;
-    const { category, subtype, color, iconUrl, sortOrder } = req.body;
+    const {
+      category,
+      subtype,
+      color,
+      iconUrl,
+      sortOrder,
+      photosEnabled = true,
+      photoRequired = false,
+      maxPhotos = 1,
+      maxPhotoSizeMb = 10,
+      photoCompressionQuality = 80,
+      photoRetentionDays = null,
+      photoAccessRoles = 'Administrator,Supervisor,Field_Worker',
+      photoExportMode = 'links'
+    } = req.body;
 
     // Only administrators can create pin types
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can create pin types'
@@ -74,10 +103,20 @@ const createPinType = async (req, res) => {
       pinSubtype: subtype,
       color,
       iconUrl,
-      sortOrder: sortOrder || 0
+      sortOrder: sortOrder || 0,
+      photosEnabled: photosEnabled !== false,
+      photoRequired: photoRequired === true,
+      maxPhotos: Number(maxPhotos) > 0 ? Number(maxPhotos) : 1,
+      maxPhotoSizeMb: Number(maxPhotoSizeMb) > 0 ? Number(maxPhotoSizeMb) : 10,
+      photoCompressionQuality: Number(photoCompressionQuality) > 0 ? Number(photoCompressionQuality) : 80,
+      photoRetentionDays: photoRetentionDays === '' || photoRetentionDays === null || photoRetentionDays === undefined
+        ? null
+        : (Number.isFinite(Number(photoRetentionDays)) ? Number(photoRetentionDays) : null),
+      photoAccessRoles: normalizePhotoAccessRoles(photoAccessRoles),
+      photoExportMode: ['links', 'attachments'].includes(photoExportMode) ? photoExportMode : 'links'
     });
 
-    logger.info(`Pin type created: ${newPinType.Pin_Type_ID} by user ${req.user.userId}`);
+    logger.info(`Pin type created: ${newPinType.Pin_Type_ID} by user ${req.user.User_ID}`);
 
     res.status(201).json({
       success: true,
@@ -88,7 +127,15 @@ const createPinType = async (req, res) => {
           subtype: newPinType.Pin_Subtype,
           color: newPinType.Color,
           iconUrl: newPinType.Icon_URL,
-          sortOrder: newPinType.Sort_Order
+          sortOrder: newPinType.Sort_Order,
+          photosEnabled: newPinType.Photos_Enabled,
+          photoRequired: newPinType.Photo_Required,
+          maxPhotos: newPinType.Max_Photos,
+          maxPhotoSizeMb: newPinType.Max_Photo_Size_MB,
+          photoCompressionQuality: newPinType.Photo_Compression_Quality,
+          photoRetentionDays: newPinType.Photo_Retention_Days,
+          photoAccessRoles: newPinType.Photo_Access_Roles,
+          photoExportMode: newPinType.Photo_Export_Mode
         }
       },
       message: 'Pin type created successfully'
@@ -109,10 +156,25 @@ const createPinType = async (req, res) => {
 const updatePinType = async (req, res) => {
   try {
     const { pinTypeId } = req.params;
-    const { category, subtype, color, iconUrl, sortOrder, isActive } = req.body;
+    const {
+      category,
+      subtype,
+      color,
+      iconUrl,
+      sortOrder,
+      isActive,
+      photosEnabled,
+      photoRequired,
+      maxPhotos,
+      maxPhotoSizeMb,
+      photoCompressionQuality,
+      photoRetentionDays,
+      photoAccessRoles,
+      photoExportMode
+    } = req.body;
 
     // Only administrators can update pin types
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can update pin types'
@@ -149,6 +211,33 @@ const updatePinType = async (req, res) => {
     if (isActive !== undefined) {
       updateData.Is_Active = isActive;
     }
+    if (photosEnabled !== undefined) {
+      updateData.Photos_Enabled = photosEnabled === true;
+    }
+    if (photoRequired !== undefined) {
+      updateData.Photo_Required = photoRequired === true;
+    }
+    if (maxPhotos !== undefined) {
+      updateData.Max_Photos = Number(maxPhotos) > 0 ? Number(maxPhotos) : 1;
+    }
+    if (maxPhotoSizeMb !== undefined) {
+      updateData.Max_Photo_Size_MB = Number(maxPhotoSizeMb) > 0 ? Number(maxPhotoSizeMb) : 10;
+    }
+    if (photoCompressionQuality !== undefined) {
+      const quality = Number(photoCompressionQuality);
+      updateData.Photo_Compression_Quality = Math.min(100, Math.max(10, Number.isFinite(quality) ? quality : 80));
+    }
+    if (photoRetentionDays !== undefined) {
+      updateData.Photo_Retention_Days = photoRetentionDays === '' || photoRetentionDays === null
+        ? null
+        : (Number.isFinite(Number(photoRetentionDays)) ? Number(photoRetentionDays) : null);
+    }
+    if (photoAccessRoles !== undefined) {
+      updateData.Photo_Access_Roles = normalizePhotoAccessRoles(photoAccessRoles);
+    }
+    if (photoExportMode !== undefined) {
+      updateData.Photo_Export_Mode = ['links', 'attachments'].includes(photoExportMode) ? photoExportMode : 'links';
+    }
 
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
@@ -166,7 +255,7 @@ const updatePinType = async (req, res) => {
       });
     }
 
-    logger.info(`Pin type updated: ${pinTypeId} by user ${req.user.userId}`);
+    logger.info(`Pin type updated: ${pinTypeId} by user ${req.user.User_ID}`);
 
     res.json({
       success: true,
@@ -178,7 +267,15 @@ const updatePinType = async (req, res) => {
           color: updatedPinType.Color,
           iconUrl: updatedPinType.Icon_URL,
           sortOrder: updatedPinType.Sort_Order,
-          isActive: updatedPinType.Is_Active
+          isActive: updatedPinType.Is_Active,
+          photosEnabled: updatedPinType.Photos_Enabled,
+          photoRequired: updatedPinType.Photo_Required,
+          maxPhotos: updatedPinType.Max_Photos,
+          maxPhotoSizeMb: updatedPinType.Max_Photo_Size_MB,
+          photoCompressionQuality: updatedPinType.Photo_Compression_Quality,
+          photoRetentionDays: updatedPinType.Photo_Retention_Days,
+          photoAccessRoles: updatedPinType.Photo_Access_Roles,
+          photoExportMode: updatedPinType.Photo_Export_Mode
         }
       },
       message: 'Pin type updated successfully'
@@ -201,7 +298,7 @@ const deletePinType = async (req, res) => {
     const { pinTypeId } = req.params;
 
     // Only administrators can delete pin types
-    if (req.user.role !== 'Administrator') {
+    if (req.user.Role !== 'Administrator') {
       return res.status(403).json({
         success: false,
         message: 'Only administrators can delete pin types'
@@ -218,7 +315,7 @@ const deletePinType = async (req, res) => {
       });
     }
 
-    logger.info(`Pin type deleted: ${pinTypeId} by user ${req.user.userId}`);
+    logger.info(`Pin type deleted: ${pinTypeId} by user ${req.user.User_ID}`);
 
     res.json({
       success: true,
@@ -242,7 +339,7 @@ const getPinCategories = async (req, res) => {
     const { agencyId } = req.params;
 
     // Check authorization
-    if (req.user.Role !== 'Administrator' && req.user.Agency_ID !== parseInt(agencyId)) {
+    if (!canAccessAgency(req.user, parseInt(agencyId))) {
       return res.status(403).json({
         success: false,
         message: 'Access denied'

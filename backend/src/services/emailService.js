@@ -112,14 +112,21 @@ class EmailService {
       endTime: formatDateTime(authority.End_Tracking_Time || new Date()),
       duration: calculateDuration(authority.Start_Time, authority.End_Tracking_Time || new Date()),
       totalPins: pins.length,
-      pins: pins.map((pin, index) => ({
+      pins: pins.map((pin, index) => {
+        const photoLinks = this.extractPhotoUrls(pin);
+        const photoLinksText = photoLinks.length
+          ? `\nPhotos: ${photoLinks.join(' , ')}`
+          : '';
+        return {
+          photoLinks,
         number: index + 1,
         type: pin.Pin_Subtype || 'General',
         location: pin.MP ? `MP ${pin.MP}` : 'No MP',
         coordinates: `${pin.Latitude?.toFixed(6)}, ${pin.Longitude?.toFixed(6)}`,
-        notes: pin.Notes || '',
+        notes: `${pin.Notes || ''}${photoLinksText}`,
         time: formatDateTime(pin.Created_Date),
-      })),
+        };
+      }),
       summary: trip?.Trip_Notes || 'No summary provided',
       safetyNotes: this.generateSafetyNotes(pins),
     };
@@ -232,17 +239,50 @@ class EmailService {
     // Add photos from pin drops
     if (reportData.pins) {
       reportData.pins.forEach((pin, index) => {
-        if (pin.Photo_URL && fs.existsSync(pin.Photo_URL)) {
-          attachments.push({
-            filename: `pin-${index + 1}.jpg`,
-            path: pin.Photo_URL,
-            contentType: 'image/jpeg',
-          });
+        const photoUrls = this.extractPhotoUrls(pin);
+        const shouldAttach = (pin.Photo_Export_Mode || 'links') === 'attachments';
+        if (!shouldAttach) {
+          return;
         }
+
+        photoUrls.forEach((photoUrl, photoIndex) => {
+          if (photoUrl && fs.existsSync(photoUrl)) {
+            attachments.push({
+              filename: `pin-${index + 1}-${photoIndex + 1}.jpg`,
+              path: photoUrl,
+              contentType: 'image/jpeg',
+            });
+          }
+        });
       });
     }
     
     return attachments;
+  }
+
+  extractPhotoUrls(pin) {
+    const urls = [];
+
+    if (pin.Photo_URL) {
+      urls.push(pin.Photo_URL);
+    }
+
+    if (pin.Photo_URLs) {
+      try {
+        const parsed = JSON.parse(pin.Photo_URLs);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((url) => {
+            if (url && !urls.includes(url)) {
+              urls.push(url);
+            }
+          });
+        }
+      } catch (error) {
+        // Ignore invalid JSON and keep fallback Photo_URL
+      }
+    }
+
+    return urls;
   }
 
   generateSafetyNotes(pins) {

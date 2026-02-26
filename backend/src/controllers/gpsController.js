@@ -20,6 +20,13 @@ const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
 };
 
 class GPSController {
+  constructor() {
+    this.updatePosition = this.updatePosition.bind(this);
+    this.getMyPosition = this.getMyPosition.bind(this);
+    this.getAllActivePositions = this.getAllActivePositions.bind(this);
+    this.enrichPositionsWithUserDetails = this.enrichPositionsWithUserDetails.bind(this);
+  }
+
   async updatePosition(req, res) {
     try {
       const user = req.user;
@@ -36,8 +43,12 @@ class GPSController {
       gpsData.latitude = latitude;
       gpsData.longitude = longitude;
       
-      // Add user ID to GPS data
+      // Add user ID and audit context to GPS data
       gpsData.userId = user.User_ID;
+      gpsData.auditContext = {
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      };
 
       const now = Date.now();
       const last = userGpsProcessState.get(user.User_ID);
@@ -143,12 +154,15 @@ class GPSController {
       
       // Get user details for each position
       const positionsWithDetails = await this.enrichPositionsWithUserDetails(positions);
+      const scopedPositions = user.Role === 'Administrator'
+        ? positionsWithDetails
+        : positionsWithDetails.filter((pos) => Number(pos?.user?.agencyId) === Number(user.Agency_ID));
       
       res.json({
         success: true,
         data: {
-          positions: positionsWithDetails,
-          count: positionsWithDetails.length
+          positions: scopedPositions,
+          count: scopedPositions.length
         }
       });
     } catch (error) {
@@ -174,6 +188,7 @@ class GPSController {
             u.Employee_Name,
             u.Employee_Contact,
             u.Role,
+            u.Agency_ID,
             a.Authority_ID,
             a.Track_Type,
             a.Track_Number,
@@ -194,7 +209,8 @@ class GPSController {
             user: {
               employeeName: result.recordset[0].Employee_Name,
               employeeContact: result.recordset[0].Employee_Contact,
-              role: result.recordset[0].Role
+              role: result.recordset[0].Role,
+              agencyId: result.recordset[0].Agency_ID
             },
             authority: result.recordset[0].Authority_ID ? {
               authorityId: result.recordset[0].Authority_ID,

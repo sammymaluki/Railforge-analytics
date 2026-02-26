@@ -5,7 +5,6 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -20,7 +19,7 @@ import theme from '../../constants/theme';
 const LoginScreen = ({ navigation }) => {
   const dispatch = useDispatch();
   const authState = useSelector((state) => state.auth);
-  
+
   // Ensure booleans are actually booleans (not strings from persistence)
   const isLoading = Boolean(authState.isLoading);
   const error = authState.error;
@@ -31,7 +30,7 @@ const LoginScreen = ({ navigation }) => {
 
   useEffect(() => {
     if (error) {
-      Alert.alert('Login Failed', error);
+      Alert.alert('Login Failed', String(error));
       dispatch(clearError());
     }
   }, [error, dispatch]);
@@ -78,7 +77,7 @@ const LoginScreen = ({ navigation }) => {
 
         <View style={styles.formContainer}>
           <Text style={styles.title}>Sign In</Text>
-          
+
           <View style={styles.inputContainer}>
             <Text style={styles.label}>Username</Text>
             <TextInput
@@ -128,6 +127,14 @@ const LoginScreen = ({ navigation }) => {
             </Text>
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={styles.createAccountButton}
+            onPress={() => navigation.navigate('Register')}
+            disabled={isLoading === true}
+          >
+            <Text style={styles.createAccountText}>Create Account</Text>
+          </TouchableOpacity>
+
           <View style={styles.demoContainer}>
             <Text style={styles.demoText}>For testing:</Text>
             <View style={styles.demoButtons}>
@@ -151,7 +158,7 @@ const LoginScreen = ({ navigation }) => {
               Secure railroad situational awareness system
             </Text>
             <Text style={styles.footerSubtext}>
-              © RMedlin2026
+              (c) RMedlin2026
             </Text>
           </View>
         </View>
@@ -173,11 +180,6 @@ const styles = StyleSheet.create({
   logoContainer: {
     alignItems: 'center',
     marginBottom: 40,
-  },
-  logo: {
-    width: 200,
-    height: 80,
-    marginBottom: 10,
   },
   appName: {
     fontSize: 24,
@@ -257,6 +259,15 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 18,
     fontWeight: 'bold',
+  },
+  createAccountButton: {
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  createAccountText: {
+    color: '#FFD100',
+    fontSize: 14,
+    fontWeight: '600',
   },
   demoContainer: {
     marginTop: 25,

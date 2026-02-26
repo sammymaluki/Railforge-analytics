@@ -32,13 +32,12 @@ import {
   Refresh as RefreshIcon,
   Timeline as TimelineIcon
 } from '@mui/icons-material';
-import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { useSelector } from 'react-redux';
 
 const OverlapVisualizer = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use DEFAULT agency (ID 1) for testing
-  const agencyId = 1;
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 1);
 
   const [overlaps, setOverlaps] = useState([]);
   const [loading, setLoading] = useState(false);

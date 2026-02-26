@@ -7,9 +7,11 @@ import { checkAuthStatus } from '../store/slices/authSlice';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import socketService from '../services/socket/SocketService';
 import logger from '../utils/logger';
+import { navigationRef } from './NavigationService';
 
 // Screens
 import LoginScreen from '../screens/Auth/LoginScreen';
+import RegisterScreen from '../screens/Auth/RegisterScreen';
 import HomeScreen from '../screens/Home/HomeScreen';
 import SearchScreen from '../screens/Search/SearchScreen';
 import MapScreen from '../screens/Map/MapScreen';
@@ -29,6 +31,7 @@ const Tab = createBottomTabNavigator();
 const AuthNavigator = () => (
   <Stack.Navigator screenOptions={{ headerShown: false }}>
     <Stack.Screen name="Login" component={LoginScreen} />
+    <Stack.Screen name="Register" component={RegisterScreen} />
   </Stack.Navigator>
 );
 
@@ -113,13 +116,14 @@ const MainTabNavigator = () => {
       <Tab.Screen 
         name="Pins" 
         component={PinsScreen} 
-        options={{ title: 'Pin Drops' }}
+        options={{ title: 'Pin Drops', headerShown: false }}
       />
       <Tab.Screen 
         name="Alerts" 
         component={AlertsScreen} 
         options={{ 
           title: 'Alerts',
+          headerShown: false,
           tabBarBadge: unreadAlertsCount > 0 ? unreadAlertsCount : undefined,
         }}
       />
@@ -227,7 +231,7 @@ const AppNavigator = () => {
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       {isAuthenticated ? <MainStackNavigator /> : <AuthNavigator />}
     </NavigationContainer>
   );

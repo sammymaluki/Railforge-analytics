@@ -8,10 +8,6 @@ import {
   Alert,
   CircularProgress,
   TextField,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
   Card,
   CardContent,
   Table,
@@ -20,7 +16,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  Chip,
   Divider
 } from '@mui/material';
 import {
@@ -32,13 +27,12 @@ import {
   TrendingUp as UsageIcon
 } from '@mui/icons-material';
 import { format } from 'date-fns';
-import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { useSelector } from 'react-redux';
 
 const Reports = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use DEFAULT agency (ID 1) for testing
-  const agencyId = 1;
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 1);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);

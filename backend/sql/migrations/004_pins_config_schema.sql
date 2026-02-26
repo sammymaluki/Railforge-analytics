@@ -1,5 +1,5 @@
 -- Pins, Trips, and Configuration Tables
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- 8. Pin_Types Table (Configurable)

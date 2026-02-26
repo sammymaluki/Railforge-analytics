@@ -1,5 +1,5 @@
 -- Stored Procedures for Critical Operations
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- Procedure to create authority with overlap check

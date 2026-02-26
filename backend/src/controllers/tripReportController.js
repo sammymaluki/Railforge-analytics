@@ -52,7 +52,8 @@ class TripReportController {
           SELECT p.*,
                  pt.Pin_Category,
                  pt.Pin_Subtype,
-                 pt.Color
+                 pt.Color,
+                 pt.Photo_Export_Mode
           FROM Pins p
           LEFT JOIN Pin_Types pt ON p.Pin_Type_ID = pt.Pin_Type_ID
           WHERE p.Authority_ID = @authorityId
@@ -173,7 +174,8 @@ class TripReportController {
           SELECT p.*,
                  pt.Pin_Category,
                  pt.Pin_Subtype,
-                 pt.Color
+                 pt.Color,
+                 pt.Photo_Export_Mode
           FROM Pins p
           LEFT JOIN Pin_Types pt ON p.Pin_Type_ID = pt.Pin_Type_ID
           WHERE p.Authority_ID = @authorityId
@@ -285,7 +287,8 @@ class TripReportController {
           SELECT p.*,
                  pt.Pin_Category,
                  pt.Pin_Subtype,
-                 pt.Color
+                 pt.Color,
+                 pt.Photo_Export_Mode
           FROM Pins p
           LEFT JOIN Pin_Types pt ON p.Pin_Type_ID = pt.Pin_Type_ID
           WHERE p.Authority_ID = @authorityId

@@ -4,77 +4,352 @@ const { getSocketIO } = require('../config/socket');
 const emailService = require('../services/emailService');
 const sql = require('mssql');
 const { poolPromise } = require('../config/database');
+const {
+  getFieldConfigurations,
+  getOverlapAlertConfig,
+  getNotificationPolicyConfig,
+} = require('../services/agencyConfigService');
+const firebaseService = require('../services/firebaseService');
+const { logAuditEvent } = require('../services/auditEventService');
+const { canAccessAgency, isGlobalAdmin } = require('../utils/rbac');
+
+const isBlank = (value) => value === undefined || value === null || String(value).trim() === '';
+
+const toMinutes = (timeStr) => {
+  const [h, m] = String(timeStr || '00:00').split(':').map((part) => Number.parseInt(part, 10));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
+  return h * 60 + m;
+};
+
+const isWithinWindow = (nowMinutes, startMinutes, endMinutes) => {
+  if (startMinutes === endMinutes) return true;
+  if (startMinutes < endMinutes) return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+};
+
+const buildNotificationPolicy = (agencyId, level) => {
+  const cfg = getNotificationPolicyConfig(agencyId);
+  const normalizedLevel = String(level || 'critical').toLowerCase();
+  const base = {
+    enabled: cfg.enabled,
+    pushEnabled: cfg.pushEnabled,
+    visualEnabled: cfg.visualEnabled,
+    vibrationEnabled: cfg.vibrationEnabled,
+    audioEnabled: cfg.audioEnabled,
+    suppressedBy: null,
+  };
+
+  if (!cfg.enabled) {
+    return { ...base, pushEnabled: false, visualEnabled: false, vibrationEnabled: false, audioEnabled: false, suppressedBy: 'disabled' };
+  }
+
+  const now = new Date();
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+  if (cfg.quietHours.enabled) {
+    const start = toMinutes(cfg.quietHours.start);
+    const end = toMinutes(cfg.quietHours.end);
+    if (isWithinWindow(nowMinutes, start, end) && cfg.quietHours.suppressLevels.includes(normalizedLevel)) {
+      return { ...base, pushEnabled: false, visualEnabled: false, vibrationEnabled: false, audioEnabled: false, suppressedBy: 'quietHours' };
+    }
+  }
+
+  if (cfg.shiftRules.enabled) {
+    const start = toMinutes(cfg.shiftRules.start);
+    const end = toMinutes(cfg.shiftRules.end);
+    if (!isWithinWindow(nowMinutes, start, end) && cfg.shiftRules.suppressOutsideShiftLevels.includes(normalizedLevel)) {
+      return { ...base, pushEnabled: false, visualEnabled: false, vibrationEnabled: false, audioEnabled: false, suppressedBy: 'shiftRules' };
+    }
+  }
+
+  return base;
+};
 
 class AuthorityController {
   async createAuthority(req, res) {
     try {
       const user = req.user;
       const authorityData = req.body;
+      const fieldConfigurations = getFieldConfigurations(user.Agency_ID);
+
+      const validationErrors = [];
+      const normalizedAuthorityData = { ...authorityData };
+
+      const isFieldEnabled = (fieldKey) => fieldConfigurations?.[fieldKey]?.enabled !== false;
+      const isFieldRequired = (fieldKey) => Boolean(fieldConfigurations?.[fieldKey]?.required);
+      const fieldLabel = (fieldKey, fallback) => fieldConfigurations?.[fieldKey]?.label || fallback;
+
+      if (isBlank(normalizedAuthorityData.authorityType)) {
+        validationErrors.push({ field: 'authorityType', message: 'Authority type is required' });
+      }
+
+      if (isFieldEnabled('subdivision')) {
+        if (isFieldRequired('subdivision') && isBlank(normalizedAuthorityData.subdivisionId)) {
+          validationErrors.push({
+            field: 'subdivisionId',
+            message: `${fieldLabel('subdivision', 'Subdivision')} is required`,
+          });
+        }
+      } else {
+        delete normalizedAuthorityData.subdivisionId;
+      }
+
+      if (isFieldEnabled('beginMP')) {
+        if (isFieldRequired('beginMP') && isBlank(normalizedAuthorityData.beginMP)) {
+          validationErrors.push({
+            field: 'beginMP',
+            message: `${fieldLabel('beginMP', 'Begin MP')} is required`,
+          });
+        }
+
+        const beginMP = Number.parseFloat(normalizedAuthorityData.beginMP);
+        if (!Number.isNaN(beginMP)) {
+          normalizedAuthorityData.beginMP = beginMP;
+        } else if (!isBlank(normalizedAuthorityData.beginMP)) {
+          validationErrors.push({
+            field: 'beginMP',
+            message: `${fieldLabel('beginMP', 'Begin MP')} must be numeric`,
+          });
+        }
+      } else {
+        delete normalizedAuthorityData.beginMP;
+      }
+
+      if (isFieldEnabled('endMP')) {
+        if (isFieldRequired('endMP') && isBlank(normalizedAuthorityData.endMP)) {
+          validationErrors.push({
+            field: 'endMP',
+            message: `${fieldLabel('endMP', 'End MP')} is required`,
+          });
+        }
+
+        const endMP = Number.parseFloat(normalizedAuthorityData.endMP);
+        if (!Number.isNaN(endMP)) {
+          normalizedAuthorityData.endMP = endMP;
+        } else if (!isBlank(normalizedAuthorityData.endMP)) {
+          validationErrors.push({
+            field: 'endMP',
+            message: `${fieldLabel('endMP', 'End MP')} must be numeric`,
+          });
+        }
+      } else {
+        delete normalizedAuthorityData.endMP;
+      }
+
+      if (
+        isFieldEnabled('beginMP') &&
+        isFieldEnabled('endMP') &&
+        Number.isFinite(normalizedAuthorityData.beginMP) &&
+        Number.isFinite(normalizedAuthorityData.endMP) &&
+        normalizedAuthorityData.endMP < normalizedAuthorityData.beginMP
+      ) {
+        validationErrors.push({
+          field: 'endMP',
+          message: `${fieldLabel('endMP', 'End MP')} must be greater than or equal to ${fieldLabel('beginMP', 'Begin MP')}`,
+        });
+      }
+
+      if (isFieldEnabled('trackType')) {
+        if (isFieldRequired('trackType') && isBlank(normalizedAuthorityData.trackType)) {
+          validationErrors.push({
+            field: 'trackType',
+            message: `${fieldLabel('trackType', 'Track Type')} is required`,
+          });
+        }
+        const configuredTrackTypes = Array.isArray(fieldConfigurations?.trackType?.options)
+          ? fieldConfigurations.trackType.options.map((opt) => String(opt).trim()).filter(Boolean)
+          : [];
+        if (
+          configuredTrackTypes.length > 0 &&
+          !isBlank(normalizedAuthorityData.trackType) &&
+          !configuredTrackTypes.includes(String(normalizedAuthorityData.trackType).trim())
+        ) {
+          validationErrors.push({
+            field: 'trackType',
+            message: `${fieldLabel('trackType', 'Track Type')} is not allowed`,
+          });
+        }
+      } else {
+        delete normalizedAuthorityData.trackType;
+      }
+
+      if (isFieldEnabled('trackNumber')) {
+        if (isFieldRequired('trackNumber') && isBlank(normalizedAuthorityData.trackNumber)) {
+          validationErrors.push({
+            field: 'trackNumber',
+            message: `${fieldLabel('trackNumber', 'Track Number')} is required`,
+          });
+        }
+      } else {
+        delete normalizedAuthorityData.trackNumber;
+      }
+
+      if (!isFieldEnabled('employeeName')) {
+        delete normalizedAuthorityData.employeeNameDisplay;
+      }
+      if (!isFieldEnabled('employeeContact')) {
+        delete normalizedAuthorityData.employeeContactDisplay;
+      }
+
+      if (validationErrors.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation failed',
+          details: validationErrors,
+        });
+      }
 
       // Normalize optional expiration to prevent invalid null/empty values reaching the model.
-      if (authorityData.expirationTime === null || authorityData.expirationTime === '') {
-        delete authorityData.expirationTime;
+      if (normalizedAuthorityData.expirationTime === null || normalizedAuthorityData.expirationTime === '') {
+        delete normalizedAuthorityData.expirationTime;
       }
       
       // Add user ID to authority data
-      authorityData.userId = user.User_ID;
+      normalizedAuthorityData.userId = user.User_ID;
       
       // Use employee name and contact from user if not provided
-      if (!authorityData.employeeNameDisplay) {
-        authorityData.employeeNameDisplay = user.Employee_Name;
+      if (!normalizedAuthorityData.employeeNameDisplay) {
+        normalizedAuthorityData.employeeNameDisplay = user.Employee_Name;
       }
-      if (!authorityData.employeeContactDisplay) {
-        authorityData.employeeContactDisplay = user.Employee_Contact;
+      if (!normalizedAuthorityData.employeeContactDisplay) {
+        normalizedAuthorityData.employeeContactDisplay = user.Employee_Contact;
       }
       
-      const result = await Authority.create(authorityData);
+      const result = await Authority.create(normalizedAuthorityData);
       
       // Log authority creation
       logger.info(`Authority created: ID ${result.authorityId} by user ${user.User_ID} (${user.Employee_Name})`);
+      await logAuditEvent({
+        userId: user.User_ID,
+        actionType: 'AUTHORITY_START',
+        tableName: 'Authorities',
+        recordId: result.authorityId,
+        newValue: {
+          subdivisionId: normalizedAuthorityData.subdivisionId,
+          beginMP: normalizedAuthorityData.beginMP,
+          endMP: normalizedAuthorityData.endMP,
+          trackType: normalizedAuthorityData.trackType,
+          trackNumber: normalizedAuthorityData.trackNumber,
+        },
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
       
       // If overlap detected, send real-time alerts and email notifications
       if (result.hasOverlap && result.overlapDetails.length > 0) {
+        const overlapAlertConfig = getOverlapAlertConfig(user.Agency_ID);
+        const notificationPolicy = buildNotificationPolicy(user.Agency_ID, 'critical');
+
+        const maskOverlapCounterparty = (name, phone) => ({
+          employeeName: overlapAlertConfig.showEmployeeName ? name : 'Hidden by admin policy',
+          employeeContact: overlapAlertConfig.showEmployeePhone ? phone : null,
+        });
+
         for (const overlap of result.overlapDetails) {
           // Send socket alert to both users
           const socket = getSocketIO();
+
+          const overlapRangeBegin = Math.max(
+            Number(normalizedAuthorityData.beginMP),
+            Number(overlap.Begin_MP)
+          );
+          const overlapRangeEnd = Math.min(
+            Number(normalizedAuthorityData.endMP),
+            Number(overlap.End_MP)
+          );
+          const overlapRange = {
+            beginMP: overlapRangeBegin,
+            endMP: overlapRangeEnd,
+          };
+
+          const newAuthorityDisplay = maskOverlapCounterparty(
+            normalizedAuthorityData.employeeNameDisplay,
+            normalizedAuthorityData.employeeContactDisplay
+          );
+          const existingAuthorityDisplay = maskOverlapCounterparty(
+            overlap.Employee_Name_Display,
+            overlap.Employee_Contact_Display
+          );
           
-          // Alert to overlapping authority user
-          socket.to(`user-${overlap.User_ID}`).emit('authority_overlap', {
-            type: 'OVERLAP_DETECTED',
-            message: `Authority overlap detected with ${authorityData.employeeNameDisplay}`,
-            details: {
-              yourAuthority: {
-                beginMP: overlap.Begin_MP,
-                endMP: overlap.End_MP
+          if (notificationPolicy.visualEnabled) {
+            // Alert to overlapping authority user
+            socket.to(`user-${overlap.User_ID}`).emit('authority_overlap', {
+              type: 'OVERLAP_DETECTED',
+              message: `Authority overlap detected with ${newAuthorityDisplay.employeeName}`,
+              details: {
+                yourAuthority: {
+                  beginMP: overlap.Begin_MP,
+                  endMP: overlap.End_MP
+                },
+                overlappingAuthority: {
+                  employeeName: newAuthorityDisplay.employeeName,
+                  employeeContact: newAuthorityDisplay.employeeContact,
+                  beginMP: normalizedAuthorityData.beginMP,
+                  endMP: normalizedAuthorityData.endMP
+                },
+                overlapRange: overlapAlertConfig.highlightOverlapRange ? overlapRange : null,
+                notificationPolicy,
               },
-              overlappingAuthority: {
-                employeeName: authorityData.employeeNameDisplay,
-                employeeContact: authorityData.employeeContactDisplay,
-                beginMP: authorityData.beginMP,
-                endMP: authorityData.endMP
-              }
-            },
-            timestamp: new Date()
-          });
-          
-          // Alert to new authority user
-          socket.to(`user-${user.User_ID}`).emit('authority_overlap', {
-            type: 'OVERLAP_DETECTED',
-            message: `Authority overlap detected with ${overlap.Employee_Name_Display}`,
-            details: {
-              yourAuthority: {
-                beginMP: authorityData.beginMP,
-                endMP: authorityData.endMP
+              timestamp: new Date()
+            });
+            
+            // Alert to new authority user
+            socket.to(`user-${user.User_ID}`).emit('authority_overlap', {
+              type: 'OVERLAP_DETECTED',
+              message: `Authority overlap detected with ${existingAuthorityDisplay.employeeName}`,
+              details: {
+                yourAuthority: {
+                  beginMP: normalizedAuthorityData.beginMP,
+                  endMP: normalizedAuthorityData.endMP
+                },
+                overlappingAuthority: {
+                  employeeName: existingAuthorityDisplay.employeeName,
+                  employeeContact: existingAuthorityDisplay.employeeContact,
+                  beginMP: overlap.Begin_MP,
+                  endMP: overlap.End_MP
+                },
+                overlapRange: overlapAlertConfig.highlightOverlapRange ? overlapRange : null,
+                notificationPolicy,
               },
-              overlappingAuthority: {
-                employeeName: overlap.Employee_Name_Display,
-                employeeContact: overlap.Employee_Contact_Display,
-                beginMP: overlap.Begin_MP,
-                endMP: overlap.End_MP
+              timestamp: new Date()
+            });
+          }
+
+          if (notificationPolicy.pushEnabled) {
+            await firebaseService.sendAuthorityOverlapAlert(
+              {
+                Authority_ID: result.authorityId,
+                User_ID: user.User_ID,
+              },
+              {
+                Authority_ID: overlap.Authority_ID,
+                Employee_Name_Display: existingAuthorityDisplay.employeeName,
+                Employee_Contact_Display: existingAuthorityDisplay.employeeContact,
+                Begin_MP: overlapRange.beginMP,
+                End_MP: overlapRange.endMP,
+                Track_Type: normalizedAuthorityData.trackType,
+                Track_Number: normalizedAuthorityData.trackNumber,
+                notificationPolicy,
               }
-            },
-            timestamp: new Date()
-          });
+            );
+
+            await firebaseService.sendAuthorityOverlapAlert(
+              {
+                Authority_ID: overlap.Authority_ID,
+                User_ID: overlap.User_ID,
+              },
+              {
+                Authority_ID: result.authorityId,
+                Employee_Name_Display: newAuthorityDisplay.employeeName,
+                Employee_Contact_Display: newAuthorityDisplay.employeeContact,
+                Begin_MP: overlapRange.beginMP,
+                End_MP: overlapRange.endMP,
+                Track_Type: normalizedAuthorityData.trackType,
+                Track_Number: normalizedAuthorityData.trackNumber,
+                notificationPolicy,
+              }
+            );
+          }
         }
 
         // Send email notification to supervisors/admins
@@ -127,7 +402,38 @@ class AuthorityController {
       
       res.status(201).json({
         success: true,
-        data: result,
+        data: (() => {
+          const overlapAlertConfig = getOverlapAlertConfig(user.Agency_ID);
+          const overlapDetails = Array.isArray(result.overlapDetails)
+            ? result.overlapDetails.map((overlap) => {
+                const overlapRangeBegin = Math.max(
+                  Number(normalizedAuthorityData.beginMP),
+                  Number(overlap.Begin_MP)
+                );
+                const overlapRangeEnd = Math.min(
+                  Number(normalizedAuthorityData.endMP),
+                  Number(overlap.End_MP)
+                );
+
+                return {
+                  ...overlap,
+                  Employee_Name_Display: overlapAlertConfig.showEmployeeName
+                    ? overlap.Employee_Name_Display
+                    : 'Hidden by admin policy',
+                  Employee_Contact_Display: overlapAlertConfig.showEmployeePhone
+                    ? overlap.Employee_Contact_Display
+                    : null,
+                  Overlap_Begin_MP: overlapRangeBegin,
+                  Overlap_End_MP: overlapRangeEnd,
+                };
+              })
+            : [];
+
+          return {
+            ...result,
+            overlapDetails,
+          };
+        })(),
         message: result.hasOverlap ? 
           'Authority created with overlap warnings' : 
           'Authority created successfully'
@@ -160,10 +466,12 @@ class AuthorityController {
       
       // Administrators and supervisors can see all active authorities
       if (user.Role === 'Administrator' || user.Role === 'Supervisor') {
+        const scopedAgencyId = isGlobalAdmin(user) ? null : Number(user.Agency_ID);
         authorities = await Authority.getActiveAuthorities(
           subdivisionId ? parseInt(subdivisionId) : null,
           trackType,
-          trackNumber
+          trackNumber,
+          scopedAgencyId
         );
       } else {
         // Field workers can only see their own active authorities
@@ -239,7 +547,9 @@ class AuthorityController {
         });
       }
       
-      if (authority.User_ID !== user.User_ID && user.Role !== 'Administrator') {
+      const isAuthorityOwner = Number(authority.User_ID) === Number(user.User_ID);
+      const canAdminEnd = user.Role === 'Administrator' && canAccessAgency(user, Number(authority.Agency_ID));
+      if (!isAuthorityOwner && !canAdminEnd) {
         return res.status(403).json({
           success: false,
           error: 'You can only end your own authorities'
@@ -260,6 +570,25 @@ class AuthorityController {
       );
       
       logger.info(`Authority ended: ID ${authorityId} by user ${user.User_ID} (${user.Employee_Name})`);
+      await logAuditEvent({
+        userId: user.User_ID,
+        actionType: 'AUTHORITY_END',
+        tableName: 'Authorities',
+        recordId: Number(authorityId),
+        oldValue: {
+          isActive: authority.Is_Active,
+          beginMP: authority.Begin_MP,
+          endMP: authority.End_MP,
+          trackType: authority.Track_Type,
+          trackNumber: authority.Track_Number,
+        },
+        newValue: {
+          isActive: false,
+          endedBy: user.User_ID,
+        },
+        ipAddress: req.ip,
+        deviceInfo: req.get('User-Agent'),
+      });
       
       res.json({
         success: true,
@@ -342,8 +671,8 @@ class AuthorityController {
       const { agencyId } = req.params;
       const { startDate, endDate } = req.query;
       
-      // Only administrators can view agency stats
-      if (user.Role !== 'Administrator') {
+      // Only administrators can view agency stats (scoped by agency unless super admin)
+      if (user.Role !== 'Administrator' || !canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'
@@ -382,7 +711,7 @@ class AuthorityController {
       };
 
       // Check permissions
-      if (user.Role !== 'Administrator' && user.Role !== 'Supervisor') {
+      if ((user.Role !== 'Administrator' && user.Role !== 'Supervisor') || !canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'
@@ -416,7 +745,7 @@ class AuthorityController {
       const { agencyId } = req.params;
 
       // Check permissions
-      if (user.Role !== 'Administrator' && user.Role !== 'Supervisor') {
+      if ((user.Role !== 'Administrator' && user.Role !== 'Supervisor') || !canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'
@@ -463,6 +792,20 @@ class AuthorityController {
         });
       }
 
+      const overlap = await Authority.getOverlapById(parseInt(overlapId));
+      if (!overlap) {
+        return res.status(404).json({
+          success: false,
+          error: 'Overlap not found'
+        });
+      }
+      if (!canAccessAgency(user, Number(overlap.Agency_ID))) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+
       await Authority.resolveOverlap(parseInt(overlapId), notes);
 
       logger.info(`Overlap ${overlapId} resolved by user ${user.User_ID} (${user.Employee_Name})`);
@@ -481,17 +824,14 @@ class AuthorityController {
   }
   
   async canViewAuthority(user, authority) {
-    // Administrators can view all
+    // Administrators can view within their scoped agency unless super admin.
     if (user.Role === 'Administrator') {
-      return true;
+      return canAccessAgency(user, Number(authority.Agency_ID));
     }
     
     // Supervisors can view authorities in their agency
     if (user.Role === 'Supervisor') {
-      // Need to check if authority belongs to same agency
-      // This would require joining with subdivisions and agencies
-      // For now, return true (implement properly in production)
-      return true;
+      return canAccessAgency(user, Number(authority.Agency_ID));
     }
     
     // Field workers can only view their own authorities

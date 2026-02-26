@@ -2,7 +2,7 @@
 -- Description: Creates table to store milepost GPS reference coordinates for track subdivisions
 -- Date: 2024
 -- Author: System Generated
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 PRINT 'Running migration: 007_track_mileposts_schema.sql';

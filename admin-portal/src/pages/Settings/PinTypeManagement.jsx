@@ -25,7 +25,9 @@ import {
   FormControl,
   InputLabel,
   Select,
-  MenuItem
+  MenuItem,
+  FormControlLabel,
+  Switch
 } from '@mui/material';
 import {
   Save as SaveIcon,
@@ -36,13 +38,12 @@ import {
   Info as InfoIcon,
   Circle as CircleIcon
 } from '@mui/icons-material';
-import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { useSelector } from 'react-redux';
 
 const PinTypeManagement = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use DEFAULT agency (ID 1) for testing
-  const agencyId = 1;
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 1);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -57,7 +58,15 @@ const PinTypeManagement = () => {
     subtype: '',
     color: '#FFD100',
     iconUrl: '',
-    sortOrder: 0
+    sortOrder: 0,
+    photosEnabled: true,
+    photoRequired: false,
+    maxPhotos: 1,
+    maxPhotoSizeMb: 10,
+    photoCompressionQuality: 80,
+    photoRetentionDays: '',
+    photoAccessRoles: 'Administrator,Supervisor,Field_Worker',
+    photoExportMode: 'links'
   });
 
   const defaultCategories = [
@@ -100,7 +109,15 @@ const PinTypeManagement = () => {
               color: pin.color || pin.Color,
               iconUrl: pin.iconUrl || pin.Icon_URL,
               sortOrder: pin.sortOrder || pin.Sort_Order || 0,
-              isActive: pin.isActive !== undefined ? pin.isActive : true
+              isActive: pin.isActive !== undefined ? pin.isActive : true,
+              photosEnabled: pin.photosEnabled ?? pin.Photos_Enabled ?? true,
+              photoRequired: pin.photoRequired ?? pin.Photo_Required ?? false,
+              maxPhotos: pin.maxPhotos ?? pin.Max_Photos ?? 1,
+              maxPhotoSizeMb: pin.maxPhotoSizeMb ?? pin.Max_Photo_Size_MB ?? 10,
+              photoCompressionQuality: pin.photoCompressionQuality ?? pin.Photo_Compression_Quality ?? 80,
+              photoRetentionDays: pin.photoRetentionDays ?? pin.Photo_Retention_Days ?? '',
+              photoAccessRoles: pin.photoAccessRoles ?? pin.Photo_Access_Roles ?? 'Administrator,Supervisor,Field_Worker',
+              photoExportMode: pin.photoExportMode ?? pin.Photo_Export_Mode ?? 'links'
             });
           });
         }
@@ -123,7 +140,15 @@ const PinTypeManagement = () => {
         subtype: pin.subtype,
         color: pin.color,
         iconUrl: pin.iconUrl || '',
-        sortOrder: pin.sortOrder || 0
+        sortOrder: pin.sortOrder || 0,
+        photosEnabled: pin.photosEnabled ?? true,
+        photoRequired: pin.photoRequired ?? false,
+        maxPhotos: pin.maxPhotos ?? 1,
+        maxPhotoSizeMb: pin.maxPhotoSizeMb ?? 10,
+        photoCompressionQuality: pin.photoCompressionQuality ?? 80,
+        photoRetentionDays: pin.photoRetentionDays ?? '',
+        photoAccessRoles: pin.photoAccessRoles ?? 'Administrator,Supervisor,Field_Worker',
+        photoExportMode: pin.photoExportMode ?? 'links'
       });
     } else {
       setEditingPin(null);
@@ -132,7 +157,15 @@ const PinTypeManagement = () => {
         subtype: '',
         color: '#FFD100',
         iconUrl: '',
-        sortOrder: 0
+        sortOrder: 0,
+        photosEnabled: true,
+        photoRequired: false,
+        maxPhotos: 1,
+        maxPhotoSizeMb: 10,
+        photoCompressionQuality: 80,
+        photoRetentionDays: '',
+        photoAccessRoles: 'Administrator,Supervisor,Field_Worker',
+        photoExportMode: 'links'
       });
     }
     setDialogOpen(true);
@@ -157,11 +190,11 @@ const PinTypeManagement = () => {
       let response;
       if (editingPin) {
         response = await api.put(
-          `/config/pin-types/${agencyId}/${editingPin.pinTypeId}`,
+          `/config/agencies/${agencyId}/pin-types/${editingPin.pinTypeId}`,
           formData
         );
       } else {
-        response = await api.post(`/config/pin-types/${agencyId}`, formData);
+        response = await api.post(`/config/agencies/${agencyId}/pin-types`, formData);
       }
 
       if (response.data.success) {
@@ -187,7 +220,7 @@ const PinTypeManagement = () => {
     }
 
     try {
-      const response = await api.delete(`/config/pin-types/${agencyId}/${pinTypeId}`);
+      const response = await api.delete(`/config/agencies/${agencyId}/pin-types/${pinTypeId}`);
       if (response.data.success) {
         setSuccess('Pin type deleted successfully!');
         loadPinTypes();
@@ -274,6 +307,7 @@ const PinTypeManagement = () => {
                     <TableCell><strong>Icon URL</strong></TableCell>
                     <TableCell><strong>Sort Order</strong></TableCell>
                     <TableCell><strong>Status</strong></TableCell>
+                    <TableCell><strong>Photos</strong></TableCell>
                     <TableCell align="center"><strong>Actions</strong></TableCell>
                   </TableRow>
                 </TableHead>
@@ -296,6 +330,13 @@ const PinTypeManagement = () => {
                         <Chip
                           label={pin.isActive ? 'Active' : 'Inactive'}
                           color={pin.isActive ? 'success' : 'default'}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={pin.photosEnabled ? `Enabled (${pin.maxPhotos})` : 'Disabled'}
+                          color={pin.photosEnabled ? 'info' : 'default'}
                           size="small"
                         />
                       </TableCell>
@@ -391,6 +432,98 @@ const PinTypeManagement = () => {
                 value={formData.iconUrl}
                 onChange={(e) => setFormData({ ...formData, iconUrl: e.target.value })}
                 helperText="URL to custom icon image"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <FormControlLabel
+                control={(
+                  <Switch
+                    checked={formData.photosEnabled}
+                    onChange={(e) => setFormData({ ...formData, photosEnabled: e.target.checked })}
+                  />
+                )}
+                label="Enable photos for this category"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <FormControlLabel
+                control={(
+                  <Switch
+                    checked={formData.photoRequired}
+                    disabled={!formData.photosEnabled}
+                    onChange={(e) => setFormData({ ...formData, photoRequired: e.target.checked })}
+                  />
+                )}
+                label="Require at least one photo"
+              />
+            </Grid>
+            <Grid item xs={4}>
+              <TextField
+                fullWidth
+                label="Max Photos"
+                type="number"
+                value={formData.maxPhotos}
+                disabled={!formData.photosEnabled}
+                onChange={(e) => setFormData({ ...formData, maxPhotos: parseInt(e.target.value, 10) || 1 })}
+                inputProps={{ min: 1, max: 10 }}
+              />
+            </Grid>
+            <Grid item xs={4}>
+              <TextField
+                fullWidth
+                label="Max Size (MB)"
+                type="number"
+                value={formData.maxPhotoSizeMb}
+                disabled={!formData.photosEnabled}
+                onChange={(e) => setFormData({ ...formData, maxPhotoSizeMb: parseInt(e.target.value, 10) || 10 })}
+                inputProps={{ min: 1, max: 25 }}
+              />
+            </Grid>
+            <Grid item xs={4}>
+              <TextField
+                fullWidth
+                label="Compression %"
+                type="number"
+                value={formData.photoCompressionQuality}
+                disabled={!formData.photosEnabled}
+                onChange={(e) => setFormData({ ...formData, photoCompressionQuality: parseInt(e.target.value, 10) || 80 })}
+                inputProps={{ min: 10, max: 100 }}
+              />
+            </Grid>
+            <Grid item xs={6}>
+              <TextField
+                fullWidth
+                label="Retention Days"
+                type="number"
+                value={formData.photoRetentionDays}
+                disabled={!formData.photosEnabled}
+                onChange={(e) => setFormData({ ...formData, photoRetentionDays: e.target.value })}
+                helperText="Blank means no automatic expiry"
+                inputProps={{ min: 1 }}
+              />
+            </Grid>
+            <Grid item xs={6}>
+              <FormControl fullWidth>
+                <InputLabel>Export Mode</InputLabel>
+                <Select
+                  value={formData.photoExportMode}
+                  label="Export Mode"
+                  disabled={!formData.photosEnabled}
+                  onChange={(e) => setFormData({ ...formData, photoExportMode: e.target.value })}
+                >
+                  <MenuItem value="links">Links</MenuItem>
+                  <MenuItem value="attachments">Attachments</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Photo Access Roles"
+                value={formData.photoAccessRoles}
+                disabled={!formData.photosEnabled}
+                onChange={(e) => setFormData({ ...formData, photoAccessRoles: e.target.value })}
+                helperText="Comma-separated roles (e.g., Administrator,Supervisor,Field_Worker)"
               />
             </Grid>
 

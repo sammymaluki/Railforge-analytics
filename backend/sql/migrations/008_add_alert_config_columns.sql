@@ -1,7 +1,7 @@
 -- Migration: Add Time_Minutes and Description columns to Alert_Configurations
 -- Purpose: Store alert timing and descriptive information
 
-USE HerzogRailAuthority;
+USE HerzogAuthority;
 GO
 
 -- Add Time_Minutes column to Alert_Configurations

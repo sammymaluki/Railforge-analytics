@@ -56,6 +56,30 @@ export const auditLogService = {
   },
 
   /**
+   * Get retention policy
+   */
+  getRetentionPolicy: async (agencyId) => {
+    const response = await api.get(`/audit/${agencyId}/retention-policy`);
+    return response.data;
+  },
+
+  /**
+   * Update retention policy
+   */
+  updateRetentionPolicy: async (agencyId, payload) => {
+    const response = await api.put(`/audit/${agencyId}/retention-policy`, payload);
+    return response.data;
+  },
+
+  /**
+   * Run retention cleanup now
+   */
+  runRetentionCleanup: async (agencyId) => {
+    const response = await api.post(`/audit/${agencyId}/retention-run`);
+    return response.data;
+  },
+
+  /**
    * Export audit logs to Excel
    */
   exportAuditLogs: async (agencyId, params = {}) => {

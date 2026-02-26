@@ -1,4 +1,4 @@
-// Sidekick Theme
+// RailForge Analytics Theme
 // Primary: White & Black, Indicator: Yellow #FFD100
 
 export const COLORS = {

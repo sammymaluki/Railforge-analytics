@@ -6,7 +6,7 @@ export const loadBranding = createAsyncThunk(
   'settings/loadBranding',
   async (agencyId, { rejectWithValue }) => {
     try {
-      const response = await api.get(`/branding/${agencyId}`);
+      const response = await api.get(`/branding/agency/${agencyId}`);
       if (response.data.success) {
         return response.data.data;
       }
@@ -21,7 +21,7 @@ export const updateBranding = createAsyncThunk(
   'settings/updateBranding',
   async ({ agencyId, branding }, { rejectWithValue }) => {
     try {
-      const response = await api.put(`/branding/${agencyId}`, branding);
+      const response = await api.put(`/branding/agency/${agencyId}`, branding);
       if (response.data.success) {
         return response.data.data;
       }

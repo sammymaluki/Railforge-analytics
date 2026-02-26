@@ -1,5 +1,5 @@
 -- Authorities and Authority Overlap Tables
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- 6. Authorities Table

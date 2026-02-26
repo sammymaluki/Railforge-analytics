@@ -19,12 +19,57 @@ class PinType extends BaseModel {
   }
 
   async create(pinTypeData) {
-    const { agencyId, pinCategory, pinSubtype, color, iconUrl = null, sortOrder = 0 } = pinTypeData;
+    const {
+      agencyId,
+      pinCategory,
+      pinSubtype,
+      color,
+      iconUrl = null,
+      sortOrder = 0,
+      photosEnabled = true,
+      photoRequired = false,
+      maxPhotos = 1,
+      maxPhotoSizeMb = 10,
+      photoCompressionQuality = 80,
+      photoRetentionDays = null,
+      photoAccessRoles = 'Administrator,Supervisor,Field_Worker',
+      photoExportMode = 'links'
+    } = pinTypeData;
     
     const query = `
-      INSERT INTO Pin_Types (Agency_ID, Pin_Category, Pin_Subtype, Color, Icon_URL, Sort_Order)
+      INSERT INTO Pin_Types (
+        Agency_ID,
+        Pin_Category,
+        Pin_Subtype,
+        Color,
+        Icon_URL,
+        Sort_Order,
+        Photos_Enabled,
+        Photo_Required,
+        Max_Photos,
+        Max_Photo_Size_MB,
+        Photo_Compression_Quality,
+        Photo_Retention_Days,
+        Photo_Access_Roles,
+        Photo_Export_Mode
+      )
       OUTPUT INSERTED.*
-      VALUES (@agencyId, @pinCategory, @pinSubtype, @color, @iconUrl, @sortOrder)
+      VALUES (
+        @agencyId,
+        @pinCategory,
+        @pinSubtype,
+        @color,
+        @iconUrl,
+        @sortOrder,
+        @photosEnabled,
+        @photoRequired,
+        @maxPhotos,
+        @maxPhotoSizeMb,
+        @photoCompressionQuality,
+        @photoRetentionDays,
+        @photoAccessRoles,
+        @photoExportMode
+      )
     `;
     
     const result = await this.executeQuery(query, {
@@ -33,7 +78,15 @@ class PinType extends BaseModel {
       pinSubtype,
       color,
       iconUrl,
-      sortOrder
+      sortOrder,
+      photosEnabled,
+      photoRequired,
+      maxPhotos,
+      maxPhotoSizeMb,
+      photoCompressionQuality,
+      photoRetentionDays,
+      photoAccessRoles,
+      photoExportMode
     });
     
     return result.recordset[0];
@@ -46,7 +99,15 @@ class PinType extends BaseModel {
       'Color',
       'Icon_URL',
       'Sort_Order',
-      'Is_Active'
+      'Is_Active',
+      'Photos_Enabled',
+      'Photo_Required',
+      'Max_Photos',
+      'Max_Photo_Size_MB',
+      'Photo_Compression_Quality',
+      'Photo_Retention_Days',
+      'Photo_Access_Roles',
+      'Photo_Export_Mode'
     ];
     
     const updates = [];

@@ -16,22 +16,29 @@ import { useSelector, useDispatch } from 'react-redux';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { deletePin, fetchPins } from '../../store/slices/pinSlice';
+import { getActiveAuthority } from '../../store/slices/authoritySlice';
 import theme from '../../constants/theme';
+import { resolveMediaUri } from '../../utils/media';
 
 const PinsScreen = () => {
   const navigation = useNavigation();
   const dispatch = useDispatch();
   const { pins, loading } = useSelector((state) => state.pins);
   const { currentAuthority } = useSelector((state) => state.authority);
+  const { user } = useSelector((state) => state.auth);
   const [selectedCategory, setSelectedCategory] = useState('All');
 
   // Fetch pins when screen is focused
   useFocusEffect(
     React.useCallback(() => {
+      if (!currentAuthority?.Authority_ID && user?.token) {
+        dispatch(getActiveAuthority());
+      }
+
       if (currentAuthority?.Authority_ID) {
         dispatch(fetchPins(currentAuthority.Authority_ID));
       }
-    }, [currentAuthority, dispatch])
+    }, [currentAuthority?.Authority_ID, user?.token, dispatch])
   );
 
   const categories = [
@@ -84,11 +91,13 @@ const PinsScreen = () => {
         const mp = pin.milepost != null && pin.milepost !== '' ? `MP ${pin.milepost}` : 'MP N/A';
         const track = [pin.trackType, pin.trackNumber].filter(Boolean).join(' ') || 'Track N/A';
         const note = pin.notes ? ` | Notes: ${pin.notes}` : '';
-        return `${index + 1}. ${pin.category || 'Uncategorized'} | ${track} | ${mp} | ${coords}${note}`;
+        const photoLinks = Array.isArray(pin.photos) ? pin.photos.map((photo) => photo?.uri).filter(Boolean) : [];
+        const photos = photoLinks.length > 0 ? ` | Photos: ${photoLinks.join(', ')}` : '';
+        return `${index + 1}. ${pin.category || 'Uncategorized'} | ${track} | ${mp} | ${coords}${note}${photos}`;
       })
       .join('\n');
 
-    const subject = `Sidekick Pin Drops (${filteredPins.length})`;
+    const subject = `RailForge Analytics Pin Drops (${filteredPins.length})`;
     const body = `Pin Drop List\nGenerated: ${timestamp}\nFilter: ${selectedCategory}\n\n${listText}`;
     const mailtoUrl = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
@@ -146,7 +155,19 @@ const PinsScreen = () => {
     }
   };
 
-  const renderPin = ({ item }) => (
+  const renderPin = ({ item }) => {
+    const photoFromArray = Array.isArray(item.photos) && item.photos.length > 0
+      ? item.photos[0]?.uri
+      : null;
+    const photoUri = resolveMediaUri(
+      photoFromArray ||
+      item.photoUri ||
+      item.Photo_URL ||
+      item.photoUrl ||
+      item.photo_url
+    );
+
+    return (
     <TouchableOpacity style={styles.pinCard} onPress={() => handleEditPin(item)} activeOpacity={0.9}>
       <View style={styles.pinHeader}>
         <View style={styles.categoryBadge}>
@@ -169,8 +190,8 @@ const PinsScreen = () => {
         </View>
       </View>
 
-      {item.photoUri && (
-        <Image source={{ uri: item.photoUri }} style={styles.pinImage} />
+      {photoUri && (
+        <Image source={{ uri: photoUri }} style={styles.pinImage} />
       )}
 
       {item.notes && (
@@ -219,6 +240,7 @@ const PinsScreen = () => {
       </View>
     </TouchableOpacity>
   );
+  };
 
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
@@ -266,6 +288,8 @@ const PinsScreen = () => {
                 styles.filterChipText,
                 selectedCategory === item && styles.filterChipTextActive,
               ]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
             >
               {item}
             </Text>
@@ -340,14 +364,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
+  filterContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
   filterChip: {
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-    marginHorizontal: theme.spacing.xs,
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.background,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    minHeight: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
   },
   filterChipActive: {
     backgroundColor: theme.colors.accent,

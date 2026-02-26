@@ -1,5 +1,5 @@
 -- Logging, Tracking, and Sync Tables
-USE [HerzogRailAuthority]
+USE [HerzogAuthority]
 GO
 
 -- 13. GPS_Logs Table (Real-time Tracking)

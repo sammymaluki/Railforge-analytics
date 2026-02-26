@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -13,6 +13,7 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  InteractionManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -27,9 +28,9 @@ import socketService from '../../services/socket/SocketService';
 import apiService from '../../services/api/ApiService';
 import gpsTrackingService from '../../services/gps/GPSTrackingService';
 import MilepostDisplay from '../../components/map/MilepostDisplay';
+import GPSAccuracyIndicator from '../../components/map/GPSAccuracyIndicator';
 import BoundaryIndicator from '../../components/map/BoundaryIndicator';
 import OfflineIndicator from '../../components/common/OfflineIndicator';
-import GPSAccuracyIndicator from '../../components/map/GPSAccuracyIndicator';
 import {
   getCurrentTrack,
   checkAuthorityBoundaries,
@@ -41,7 +42,7 @@ import { getMapStyleById } from '../../constants/mapStyles';
 import permissionManager from '../../utils/permissionManager';
 import logger from '../../utils/logger';
 import { setLayerVisibility } from '../../store/slices/mapSlice';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { logout } from '../../store/slices/authSlice';
 import { fetchPins } from '../../store/slices/pinSlice';
 import * as Clipboard from 'expo-clipboard';
@@ -55,8 +56,19 @@ import {
 } from '../../constants/theme';
 
 const { width, height } = Dimensions.get('window');
-const RAILROAD_ADDRESS_REQUEST_INTERVAL_MS = 5000;
-const MIN_MOVE_FOR_ADDRESS_REFRESH_METERS = 25;
+const DEFAULT_RAILROAD_ADDRESS_REQUEST_INTERVAL_MS = 5000;
+const DEFAULT_MIN_MOVE_FOR_ADDRESS_REFRESH_METERS = 25;
+const DEFAULT_LIVE_HUD_CONFIG = {
+  enabled: true,
+  showSubdivision: true,
+  showMilepost: true,
+  showTrackNumber: true,
+  showTrackType: true,
+  showGpsAccuracy: true,
+  milepostDecimals: 4,
+  labelStyle: 'full',
+  trackFormat: 'combined',
+};
 
 const getAgencyIdFromUser = (user) => {
   if (!user) return null;
@@ -131,6 +143,7 @@ const MapScreen = () => {
   const lastNearestAddressFetchAt = useRef(0);
   const lastNearestAddressCoords = useRef(null);
   const isFocused = useIsFocused();
+  const navigation = useNavigation();
   const HOME_POSITION_KEY = '@HerzogDB:map_home_position';
   
   const { user } = useSelector((state) => state.auth);
@@ -138,7 +151,7 @@ const MapScreen = () => {
   const pins = useSelector((state) => state.pins?.pins || []);
   const mapStyleId = useSelector((state) => state.map.mapStyleId);
   const storedLayerVisibility = useSelector((state) => state.map.layerVisibility || {});
-  const { currentPosition, isTracking } = useSelector((state) => state.gps);
+  const { currentPosition, isTracking, locationReliability } = useSelector((state) => state.gps);
   
   const [region, setRegion] = useState({
     latitude: 39.8283,
@@ -156,7 +169,7 @@ const MapScreen = () => {
   const [compassEnabled, setCompassEnabled] = useState(false);
   const [nearestRailroadAddress, setNearestRailroadAddress] = useState('None found');
   const [loadingRailroadAddress, setLoadingRailroadAddress] = useState(false);
-  const [isGpsCardMinimized, setIsGpsCardMinimized] = useState(false);
+  const [isGpsCardMinimized, setIsGpsCardMinimized] = useState(true);
   const [layers, setLayers] = useState([]);
   const [layersLoading, setLayersLoading] = useState(false);
   const [layerData, setLayerData] = useState({});
@@ -175,6 +188,23 @@ const MapScreen = () => {
   const [trackSearchSubdivisions, setTrackSearchSubdivisions] = useState([]);
   const [trackSearchSubdivisionId, setTrackSearchSubdivisionId] = useState(null);
   const [trackSearchSubdivisionOpen, setTrackSearchSubdivisionOpen] = useState(false);
+  const [trackSearchLineSegmentOpen, setTrackSearchLineSegmentOpen] = useState(false);
+  const [trackSearchTrackTypeOpen, setTrackSearchTrackTypeOpen] = useState(false);
+  const [trackSearchTrackNumberOpen, setTrackSearchTrackNumberOpen] = useState(false);
+  const [trackSearchLineSegmentItems, setTrackSearchLineSegmentItems] = useState([]);
+  const [trackSearchTrackTypeItems, setTrackSearchTrackTypeItems] = useState([]);
+  const [trackSearchTrackNumberItems, setTrackSearchTrackNumberItems] = useState([]);
+  const [milepostPrecision, setMilepostPrecision] = useState(4);
+  const [selectedAsset, setSelectedAsset] = useState(null);
+  const [liveHudConfig, setLiveHudConfig] = useState(DEFAULT_LIVE_HUD_CONFIG);
+  const [isLiveHudVisible, setIsLiveHudVisible] = useState(true);
+  const [interpolationSource, setInterpolationSource] = useState('auto');
+  const [interpolationRefreshMs, setInterpolationRefreshMs] = useState(DEFAULT_RAILROAD_ADDRESS_REQUEST_INTERVAL_MS);
+  const [interpolationMinMoveMeters, setInterpolationMinMoveMeters] = useState(DEFAULT_MIN_MOVE_FOR_ADDRESS_REFRESH_METERS);
+  const [proximityVisibilityConfig, setProximityVisibilityConfig] = useState({
+    visibleRoles: ['Field_Worker', 'Supervisor', 'Administrator'],
+    territoryMode: 'sameSubdivision',
+  });
   
   // New Follow-Me mode state
   const [currentMilepost, setCurrentMilepost] = useState(null);
@@ -186,8 +216,21 @@ const MapScreen = () => {
   const [mileposts, setMileposts] = useState([]);
   const [subdivision, setSubdivision] = useState(null);
   const [withinBoundaries, setWithinBoundaries] = useState(true);
+  const [authorityBoundary, setAuthorityBoundary] = useState(null);
   const previousPosition = useRef(null);
   const hasLoadedAuthority = useRef(false);
+
+  const formatMilepost = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return '';
+    return parsed.toFixed(milepostPrecision);
+  };
+
+  const shouldShowLiveHud = Boolean(
+    currentPosition &&
+    (isTracking || gpsActive) &&
+    liveHudConfig?.enabled !== false
+  );
 
   // Load active authority on mount
   useEffect(() => {
@@ -205,10 +248,14 @@ const MapScreen = () => {
     // Setup socket listeners
     socketService.on('user_location_update', handleUserLocationUpdate);
     socketService.on('alert', handleAlert);
+    socketService.on('proximity_alert', handleProximityAlert);
+    socketService.on('authority_overlap', handleAuthorityOverlap);
     
     return () => {
       socketService.off('user_location_update', handleUserLocationUpdate);
       socketService.off('alert', handleAlert);
+      socketService.off('proximity_alert', handleProximityAlert);
+      socketService.off('authority_overlap', handleAuthorityOverlap);
     };
   }, []);
 
@@ -230,7 +277,7 @@ const MapScreen = () => {
       if (!granted) {
         Alert.alert(
           'GPS Permission Required',
-          'Sidekick needs location permission to track your position on the tracks.',
+          'RailForge Analytics needs location permission to track your position on the tracks.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -278,6 +325,11 @@ const MapScreen = () => {
       loadMilepostData(currentAuthority.Subdivision_ID);
       setSubdivision(currentAuthority.Subdivision_Name);
       setTrackSearchSubdivisionId((prev) => prev ?? currentAuthority.Subdivision_ID);
+      if (currentAuthority.Authority_ID) {
+        loadAuthorityBoundary(currentAuthority.Authority_ID);
+      }
+    } else {
+      setAuthorityBoundary(null);
     }
 
     if (currentAuthority) {
@@ -288,6 +340,29 @@ const MapScreen = () => {
       }));
     }
   }, [currentAuthority]);
+
+  const loadAuthorityBoundary = async (authorityId) => {
+    try {
+      const boundary = await apiService.getAuthorityBoundary(authorityId);
+      if (boundary?.geometry?.type === 'LineString') {
+        const coordinates = (boundary.geometry.coordinates || [])
+          .map((coord) => ({
+            longitude: Number(coord[0]),
+            latitude: Number(coord[1]),
+          }))
+          .filter((coord) => Number.isFinite(coord.latitude) && Number.isFinite(coord.longitude));
+
+        if (coordinates.length >= 2) {
+          setAuthorityBoundary(coordinates);
+          return;
+        }
+      }
+      setAuthorityBoundary(null);
+    } catch (error) {
+      console.warn('Failed to load authority boundary:', error);
+      setAuthorityBoundary(null);
+    }
+  };
 
   useEffect(() => {
     const loadTrackSearchSubdivisions = async () => {
@@ -326,6 +401,103 @@ const MapScreen = () => {
 
     loadTrackSearchSubdivisions();
   }, [user]);
+
+  useEffect(() => {
+    const loadLiveHudConfig = async () => {
+      const agencyId = getAgencyIdFromUser(user);
+      if (!agencyId) return;
+      try {
+        const response = await apiService.getAuthorityFieldConfigurations(agencyId);
+        const fieldConfigurations = response?.data?.fieldConfigurations || {};
+        const hudConfig = {
+          ...DEFAULT_LIVE_HUD_CONFIG,
+          ...(fieldConfigurations.liveLocationHud || {}),
+        };
+        const interpolationConfig = fieldConfigurations.milepostInterpolation || {};
+        const proximityConfig = fieldConfigurations.proximityAlerts || {};
+        setLiveHudConfig(hudConfig);
+        setProximityVisibilityConfig({
+          visibleRoles: Array.isArray(proximityConfig.visibleRoles)
+            ? proximityConfig.visibleRoles
+            : ['Field_Worker', 'Supervisor', 'Administrator'],
+          territoryMode: ['sameSubdivision', 'sameTrack', 'agency'].includes(proximityConfig.territoryMode)
+            ? proximityConfig.territoryMode
+            : 'sameSubdivision',
+        });
+
+        const configDecimals = Number.parseInt(hudConfig.milepostDecimals, 10);
+        if (Number.isFinite(configDecimals)) {
+          setMilepostPrecision(Math.max(0, Math.min(6, configDecimals)));
+        }
+
+        const source = String(interpolationConfig.anchorSource || 'auto').toLowerCase();
+        setInterpolationSource(
+          ['auto', 'track_mileposts', 'milepost_geometry'].includes(source) ? source : 'auto'
+        );
+
+        const cadenceSeconds = Number.parseInt(interpolationConfig.refreshCadenceSeconds, 10);
+        if (Number.isFinite(cadenceSeconds)) {
+          setInterpolationRefreshMs(Math.max(1000, Math.min(60000, cadenceSeconds * 1000)));
+        }
+
+        const minMoveMeters = Number.parseInt(interpolationConfig.minMoveMeters, 10);
+        if (Number.isFinite(minMoveMeters)) {
+          setInterpolationMinMoveMeters(Math.max(0, Math.min(500, minMoveMeters)));
+        }
+      } catch (error) {
+        logger.warn('Map', 'Failed to load live location HUD config', error);
+      }
+    };
+
+    loadLiveHudConfig();
+  }, [user]);
+
+  useEffect(() => {
+    const loadMilepostPrecision = async () => {
+      const agencyId = getAgencyIdFromUser(user);
+      if (!agencyId) return;
+      try {
+        const response = await apiService.getAuthorityValidationRules(agencyId);
+        const precision = Number.parseInt(response?.data?.validationRules?.beginMP?.decimalPlaces, 10);
+        if (Number.isFinite(precision)) {
+          setMilepostPrecision(Math.max(0, Math.min(6, precision)));
+        }
+      } catch (error) {
+        logger.warn('Map', 'Failed to load milepost precision config', error);
+      }
+    };
+
+    loadMilepostPrecision();
+  }, [user]);
+
+  useEffect(() => {
+    const loadTrackSearchOptions = async () => {
+      const subdivisionId = trackSearchSubdivisionId || currentAuthority?.Subdivision_ID;
+      if (!subdivisionId) return;
+
+      try {
+        const response = await apiService.getTrackSearchOptions(subdivisionId);
+        const data = response?.data || {};
+        const toItems = (values = []) => values.map((value) => ({
+          label: String(value),
+          value: String(value),
+        }));
+
+        setTrackSearchLineSegmentItems(toItems(data.lineSegments));
+        setTrackSearchTrackTypeItems(toItems(data.trackTypes));
+        setTrackSearchTrackNumberItems(toItems(data.trackNumbers));
+
+        const precision = Number.parseInt(data.milepostPrecision, 10);
+        if (Number.isFinite(precision)) {
+          setMilepostPrecision(Math.max(0, Math.min(6, precision)));
+        }
+      } catch (error) {
+        logger.warn('Map', 'Failed to load track-search options', error);
+      }
+    };
+
+    loadTrackSearchOptions();
+  }, [trackSearchSubdivisionId, currentAuthority?.Subdivision_ID]);
 
   // Load layer list when screen mounts or authority changes
   useEffect(() => {
@@ -421,8 +593,8 @@ const MapScreen = () => {
         )
         : Infinity;
 
-      const recentlyFetched = now - lastNearestAddressFetchAt.current < RAILROAD_ADDRESS_REQUEST_INTERVAL_MS;
-      if (recentlyFetched && movedMeters < MIN_MOVE_FOR_ADDRESS_REFRESH_METERS) {
+      const recentlyFetched = now - lastNearestAddressFetchAt.current < interpolationRefreshMs;
+      if (recentlyFetched && movedMeters < interpolationMinMoveMeters) {
         return;
       }
 
@@ -446,6 +618,8 @@ const MapScreen = () => {
             latitude: currentPosition.latitude,
             longitude: currentPosition.longitude,
             subdivisionId: currentAuthority.Subdivision_ID,
+            precision: milepostPrecision,
+            source: interpolationSource,
           }),
         2,
         800
@@ -459,7 +633,7 @@ const MapScreen = () => {
           // Use track info from authority, milepost from API
           const trackType = currentAuthority.Track_Type || 'Track';
           const trackNumber = currentAuthority.Track_Number || '';
-          const address = `${trackType} ${trackNumber}, MP ${milepost.toFixed(2)}`.trim();
+          const address = `${trackType} ${trackNumber}, MP ${formatMilepost(milepost)}`.trim();
           setNearestRailroadAddress(address);
           logger.info('GPS', 'Nearest railroad address found', { address, distance });
         } else {
@@ -487,7 +661,7 @@ const MapScreen = () => {
         if (trackInfo) {
           const trackType = currentAuthority.Track_Type || trackInfo.trackType || 'Track';
           const trackNumber = currentAuthority.Track_Number || trackInfo.trackNumber || '';
-          const address = `${trackType} ${trackNumber}, MP ${trackInfo.milepost.toFixed(2)}`.trim();
+          const address = `${trackType} ${trackNumber}, MP ${formatMilepost(trackInfo.milepost)}`.trim();
           setNearestRailroadAddress(address);
         }
       }
@@ -740,6 +914,7 @@ const MapScreen = () => {
         milepost: milepostValue,
         trackType: trackSearch.trackType || null,
         trackNumber: trackSearch.trackNumber || null,
+        precision: milepostPrecision,
       });
 
       const data = response.data?.data;
@@ -800,7 +975,7 @@ const MapScreen = () => {
       });
       
       // Update nearest railroad address
-      const address = `${trackType} ${trackNumber}, MP ${trackInfo.milepost.toFixed(2)}`.trim();
+      const address = `${trackType} ${trackNumber}, MP ${formatMilepost(trackInfo.milepost)}`.trim();
       setNearestRailroadAddress(address);
       
       // Calculate heading if we have previous position
@@ -849,6 +1024,33 @@ const MapScreen = () => {
   };
 
   const handleUserLocationUpdate = (locationData) => {
+    const incomingUserId = Number(locationData.userId);
+    if (Number.isFinite(incomingUserId) && incomingUserId === Number(user?.User_ID)) {
+      return;
+    }
+
+    const allowedRoles = Array.isArray(proximityVisibilityConfig.visibleRoles)
+      ? proximityVisibilityConfig.visibleRoles
+      : [];
+    if (allowedRoles.length > 0 && locationData.role && !allowedRoles.includes(locationData.role)) {
+      return;
+    }
+
+    const territoryMode = proximityVisibilityConfig.territoryMode || 'sameSubdivision';
+    if (territoryMode === 'sameSubdivision' && currentAuthority?.Subdivision_ID && locationData.subdivisionId) {
+      if (Number(locationData.subdivisionId) !== Number(currentAuthority.Subdivision_ID)) {
+        return;
+      }
+    }
+
+    if (territoryMode === 'sameTrack' && currentAuthority) {
+      const sameTrack = String(locationData.trackType || '').toLowerCase() === String(currentAuthority.Track_Type || '').toLowerCase()
+        && String(locationData.trackNumber || '').toLowerCase() === String(currentAuthority.Track_Number || '').toLowerCase();
+      if (!sameTrack) {
+        return;
+      }
+    }
+
     // Update other workers positions
     setOtherWorkers(prev => {
       const existingIndex = prev.findIndex(w => w.userId === locationData.userId);
@@ -881,9 +1083,20 @@ const MapScreen = () => {
     );
   };
 
+  const navigateToAlerts = (alertData) => {
+    InteractionManager.runAfterInteractions(() => {
+      setTimeout(() => {
+        navigation.navigate('Alerts', {
+          fromNotification: true,
+          alertType: alertData?.type || alertData?.data?.alertType || null,
+          openedAt: new Date().toISOString(),
+        });
+      }, 50);
+    });
+  };
+
   const handleViewAlert = (alertData) => {
-    // Navigate to alert details or show in modal
-    console.log('View alert:', alertData);
+    navigateToAlerts(alertData);
   };
 
   const toggleFollowMode = () => {
@@ -951,7 +1164,7 @@ const MapScreen = () => {
         if (showAlerts) {
           Alert.alert(
             'Permission Required',
-            'Sidekick needs location permission to track your position on the tracks.',
+            'RailForge Analytics needs location permission to track your position on the tracks.',
             [
               { text: 'Cancel', style: 'cancel' },
               { text: 'Open Settings', onPress: () => Linking.openSettings() },
@@ -983,11 +1196,35 @@ const MapScreen = () => {
     }
   };
 
-  const getCurrentMapDestination = () => {
-    if (currentPosition?.latitude && currentPosition?.longitude) {
-      return `${currentPosition.latitude},${currentPosition.longitude}`;
+  const getCurrentMapDestination = (asset = null) => {
+    const latitude = Number(asset?.latitude ?? currentPosition?.latitude);
+    const longitude = Number(asset?.longitude ?? currentPosition?.longitude);
+    if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
+      return `${latitude},${longitude}`;
     }
     return null;
+  };
+
+  const handleProximityAlert = (alertData) => {
+    if (!alertData) return;
+    Alert.alert(
+      alertData.level === 'critical' ? '🚨 PROXIMITY ALERT' : '⚠️ Proximity Alert',
+      alertData.message || 'Nearby worker detected.',
+      [{ text: 'OK' }]
+    );
+  };
+
+  const handleAuthorityOverlap = (overlapData) => {
+    const overlapRange = overlapData?.details?.overlapRange;
+    const rangeText = overlapRange?.beginMP != null && overlapRange?.endMP != null
+      ? `\nOverlap MP Range: ${Number(overlapRange.beginMP).toFixed(4)} - ${Number(overlapRange.endMP).toFixed(4)}`
+      : '';
+
+    Alert.alert(
+      '🚨 Authority Overlap',
+      `${overlapData?.message || 'Authority overlap detected.'}${rangeText}`,
+      [{ text: 'OK' }]
+    );
   };
 
   const copyCurrentCoordinates = async () => {
@@ -1009,8 +1246,20 @@ const MapScreen = () => {
     Alert.alert('Copied', 'Nearest railroad address copied to clipboard.');
   };
 
-  const openAppleMaps = async () => {
-    const destination = getCurrentMapDestination();
+  const copySelectedAssetDetails = async () => {
+    if (!selectedAsset) return;
+    const destination = getCurrentMapDestination(selectedAsset);
+    const details = [
+      selectedAsset.title || 'Map Asset',
+      selectedAsset.subtitle || selectedAsset.description || '',
+      destination ? `Coordinates: ${destination}` : '',
+    ].filter(Boolean).join('\n');
+    await Clipboard.setStringAsync(details);
+    Alert.alert('Copied', 'Asset details copied to clipboard.');
+  };
+
+  const openAppleMaps = async (asset = null) => {
+    const destination = getCurrentMapDestination(asset);
     if (!destination) {
       Alert.alert('Map', 'No live GPS position available yet.');
       return;
@@ -1022,8 +1271,8 @@ const MapScreen = () => {
     await Linking.openURL(`http://maps.apple.com/?ll=${destination}&q=Rail+Location`);
   };
 
-  const openGoogleMaps = async () => {
-    const destination = getCurrentMapDestination();
+  const openGoogleMaps = async (asset = null) => {
+    const destination = getCurrentMapDestination(asset);
     if (!destination) {
       Alert.alert('Map', 'No live GPS position available yet.');
       return;
@@ -1043,6 +1292,16 @@ const MapScreen = () => {
 
   const renderAuthorityBoundaries = () => {
     if (!currentAuthority) return null;
+    if (authorityBoundary?.length >= 2) {
+      return (
+        <Polyline
+          coordinates={authorityBoundary}
+          strokeColor="#FFD100"
+          strokeWidth={4}
+          lineDashPattern={[10, 10]}
+        />
+      );
+    }
 
     // This would use actual track geometry data
     // For now, create a simple line
@@ -1093,12 +1352,18 @@ const MapScreen = () => {
       const style = getLayerStyle(layer);
       features.forEach((feature, index) => {
         if (feature.Latitude == null || feature.Longitude == null) return;
+        const title = feature.Asset_Name || layer.label;
+        const description = feature.MP ? `MP ${feature.MP}` : feature.Asset_Type || layer.label;
         markers.push({
           key: `${layer.id}-${feature.Track_ID || feature.Milepost_ID || index}`,
+          layerId: layer.id,
           latitude: Number(feature.Latitude),
           longitude: Number(feature.Longitude),
-          title: feature.Asset_Name || layer.label,
-          description: feature.MP ? `MP ${feature.MP}` : feature.Asset_Type || layer.label,
+          title,
+          description,
+          subtitle: feature.Track_Type && feature.Track_Number
+            ? `${feature.Track_Type} ${feature.Track_Number}`
+            : '',
           color: style.color,
           icon: style.icon,
         });
@@ -1332,6 +1597,14 @@ const MapScreen = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {locationReliability?.mode === 'UNRELIABLE' && (
+        <View style={styles.unreliableBanner}>
+          <MaterialCommunityIcons name="alert-circle" size={16} color="#FF3B30" />
+          <Text style={styles.unreliableBannerText}>
+            Location Unreliable{locationReliability.pauseAuthorityAlerts ? ' - Authority alerts paused' : ''}
+          </Text>
+        </View>
+      )}
       <MapView
         ref={mapRef}
         style={styles.map}
@@ -1357,8 +1630,15 @@ const MapScreen = () => {
             description={marker.description}
             pinColor={marker.color}
             tracksViewChanges={false}
+            onPress={() => setSelectedAsset(marker)}
           >
-            <View style={[styles.layerMarker, { borderColor: marker.color }]}>
+            <View
+              style={[
+                styles.layerMarker,
+                { borderColor: marker.color },
+                selectedAsset?.key === marker.key && styles.layerMarkerSelected,
+              ]}
+            >
               <MaterialCommunityIcons name={marker.icon} size={16} color={marker.color} />
             </View>
           </Marker>
@@ -1372,11 +1652,27 @@ const MapScreen = () => {
               longitude: trackSearchResult.longitude,
             }}
             title="Track Location"
-            description={`MP ${trackSearchResult.milepost ?? ''}`}
+            description={`MP ${formatMilepost(trackSearchResult.milepost)}`}
             pinColor="#FF7A00"
             tracksViewChanges={false}
+            onPress={() =>
+              setSelectedAsset({
+                key: 'track-search-result',
+                title: 'Track Location',
+                description: `MP ${formatMilepost(trackSearchResult.milepost)}`,
+                subtitle: `${trackSearchResult.trackType || ''} ${trackSearchResult.trackNumber || ''}`.trim(),
+                latitude: trackSearchResult.latitude,
+                longitude: trackSearchResult.longitude,
+              })
+            }
           >
-            <View style={[styles.layerMarker, { borderColor: '#FF7A00' }]}>
+            <View
+              style={[
+                styles.layerMarker,
+                { borderColor: '#FF7A00' },
+                selectedAsset?.key === 'track-search-result' && styles.layerMarkerSelected,
+              ]}
+            >
               <MaterialCommunityIcons name="crosshairs-gps" size={18} color="#FF7A00" />
             </View>
           </Marker>
@@ -1391,8 +1687,24 @@ const MapScreen = () => {
             description={pin.pending ? `${pin.description} (Pending sync)` : pin.description}
             pinColor={pin.color}
             tracksViewChanges={false}
+            onPress={() =>
+              setSelectedAsset({
+                key: pin.key,
+                title: pin.title,
+                description: pin.pending ? `${pin.description} (Pending sync)` : pin.description,
+                subtitle: 'Pin Drop',
+                latitude: pin.latitude,
+                longitude: pin.longitude,
+              })
+            }
           >
-            <View style={[styles.layerMarker, { borderColor: pin.color }]}>
+            <View
+              style={[
+                styles.layerMarker,
+                { borderColor: pin.color },
+                selectedAsset?.key === pin.key && styles.layerMarkerSelected,
+              ]}
+            >
               <MaterialCommunityIcons
                 name={pin.pending ? 'map-marker-alert' : 'map-marker'}
                 size={18}
@@ -1425,19 +1737,64 @@ const MapScreen = () => {
         )}
       </MapView>
 
+      {selectedAsset && (
+        <View style={styles.assetDetailsPanel}>
+          <View style={styles.assetDetailsHeader}>
+            <Text style={styles.assetDetailsTitle}>{selectedAsset.title || 'Asset'}</Text>
+            <TouchableOpacity onPress={() => setSelectedAsset(null)}>
+              <MaterialCommunityIcons name="close" size={18} color="#CCCCCC" />
+            </TouchableOpacity>
+          </View>
+          {!!selectedAsset.subtitle && (
+            <Text style={styles.assetDetailsSubtitle}>{selectedAsset.subtitle}</Text>
+          )}
+          {!!selectedAsset.description && (
+            <Text style={styles.assetDetailsText}>{selectedAsset.description}</Text>
+          )}
+          <Text style={styles.assetDetailsCoords}>
+            {Number(selectedAsset.latitude).toFixed(6)}, {Number(selectedAsset.longitude).toFixed(6)}
+          </Text>
+          <View style={styles.assetDetailsActions}>
+            <TouchableOpacity style={styles.assetActionButton} onPress={copySelectedAssetDetails}>
+              <Text style={styles.assetActionButtonText}>Copy</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.assetActionButton}
+              onPress={() => openAppleMaps(selectedAsset)}
+            >
+              <Text style={styles.assetActionButtonText}>Apple Maps</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.assetActionButton}
+              onPress={() => openGoogleMaps(selectedAsset)}
+            >
+              <Text style={styles.assetActionButtonText}>Google Maps</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Offline Indicator */}
       <View style={styles.offlineContainer}>
         <OfflineIndicator />
       </View>
 
-      {/* GPS Accuracy Indicator */}
-      <GPSAccuracyIndicator 
-        accuracy={currentPosition?.coords?.accuracy || currentPosition?.accuracy}
-        show={true}
-      />
+      {/* Live HUD one-tap hide/show */}
+      {shouldShowLiveHud && (
+        <TouchableOpacity
+          style={styles.liveHudToggleButton}
+          onPress={() => setIsLiveHudVisible((prev) => !prev)}
+        >
+          <MaterialCommunityIcons
+            name={isLiveHudVisible ? 'eye-off' : 'eye'}
+            size={18}
+            color="#FFFFFF"
+          />
+        </TouchableOpacity>
+      )}
 
-      {/* Milepost Display - shown in Follow-Me mode */}
-      {followMode && currentPosition && (
+      {/* Live Location HUD - always while tracking/driving unless hidden */}
+      {shouldShowLiveHud && isLiveHudVisible && (
         <MilepostDisplay
           milepost={currentMilepost}
           trackType={currentTrack?.type}
@@ -1445,6 +1802,18 @@ const MapScreen = () => {
           subdivision={subdivision}
           heading={heading}
           speed={speed}
+          gpsAccuracy={currentPosition?.coords?.accuracy || currentPosition?.accuracy}
+          gpsConfidence={currentPosition?.gpsConfidenceLabel || currentPosition?.gpsConfidence}
+          gpsConfidenceScore={currentPosition?.gpsConfidenceScore}
+          hudConfig={liveHudConfig}
+        />
+      )}
+
+      {/* GPS accuracy confidence indicator */}
+      {(isTracking || gpsActive) && (
+        <GPSAccuracyIndicator
+          accuracy={currentPosition?.coords?.accuracy || currentPosition?.accuracy}
+          show
         />
       )}
 
@@ -1565,17 +1934,29 @@ const MapScreen = () => {
 
             <View style={styles.trackSearchField}>
               <Text style={styles.trackSearchLabel}>Line Segment</Text>
-              <TextInput
+              <DropDownPicker
+                open={trackSearchLineSegmentOpen}
                 value={trackSearch.lineSegment}
-                onChangeText={(value) => setTrackSearch((prev) => ({ ...prev, lineSegment: value }))}
-                placeholder="LS"
-                placeholderTextColor="#999999"
+                items={trackSearchLineSegmentItems}
+                setOpen={setTrackSearchLineSegmentOpen}
+                setValue={(callback) => {
+                  const nextValue = callback(trackSearch.lineSegment);
+                  setTrackSearch((prev) => ({ ...prev, lineSegment: nextValue || '' }));
+                }}
+                setItems={setTrackSearchLineSegmentItems}
+                placeholder="Select line segment"
                 style={styles.trackSearchInput}
+                dropDownContainerStyle={styles.trackSearchDropdownContainer}
+                textStyle={{ color: '#333333', fontSize: 12 }}
+                listMode="SCROLLVIEW"
+                searchable
+                zIndex={2500}
+                zIndexInverse={1500}
               />
             </View>
 
             <View style={styles.trackSearchField}>
-              <Text style={styles.trackSearchLabel}>Milepost</Text>
+              <Text style={styles.trackSearchLabel}>Milepost ({milepostPrecision} dp)</Text>
               <TextInput
                 value={trackSearch.milepost}
                 onChangeText={(value) => setTrackSearch((prev) => ({ ...prev, milepost: value }))}
@@ -1588,23 +1969,47 @@ const MapScreen = () => {
 
             <View style={styles.trackSearchField}>
               <Text style={styles.trackSearchLabel}>Track Type</Text>
-              <TextInput
+              <DropDownPicker
+                open={trackSearchTrackTypeOpen}
                 value={trackSearch.trackType}
-                onChangeText={(value) => setTrackSearch((prev) => ({ ...prev, trackType: value }))}
-                placeholder="Track Type"
-                placeholderTextColor="#999999"
+                items={trackSearchTrackTypeItems}
+                setOpen={setTrackSearchTrackTypeOpen}
+                setValue={(callback) => {
+                  const nextValue = callback(trackSearch.trackType);
+                  setTrackSearch((prev) => ({ ...prev, trackType: nextValue || '' }));
+                }}
+                setItems={setTrackSearchTrackTypeItems}
+                placeholder="Select track type"
                 style={styles.trackSearchInput}
+                dropDownContainerStyle={styles.trackSearchDropdownContainer}
+                textStyle={{ color: '#333333', fontSize: 12 }}
+                listMode="SCROLLVIEW"
+                searchable
+                zIndex={2000}
+                zIndexInverse={2000}
               />
             </View>
 
             <View style={styles.trackSearchField}>
               <Text style={styles.trackSearchLabel}>Track Number</Text>
-              <TextInput
+              <DropDownPicker
+                open={trackSearchTrackNumberOpen}
                 value={trackSearch.trackNumber}
-                onChangeText={(value) => setTrackSearch((prev) => ({ ...prev, trackNumber: value }))}
-                placeholder="Track Number"
-                placeholderTextColor="#999999"
+                items={trackSearchTrackNumberItems}
+                setOpen={setTrackSearchTrackNumberOpen}
+                setValue={(callback) => {
+                  const nextValue = callback(trackSearch.trackNumber);
+                  setTrackSearch((prev) => ({ ...prev, trackNumber: nextValue || '' }));
+                }}
+                setItems={setTrackSearchTrackNumberItems}
+                placeholder="Select track number"
                 style={styles.trackSearchInput}
+                dropDownContainerStyle={styles.trackSearchDropdownContainer}
+                textStyle={{ color: '#333333', fontSize: 12 }}
+                listMode="SCROLLVIEW"
+                searchable
+                zIndex={1500}
+                zIndexInverse={2500}
               />
             </View>
 
@@ -1658,16 +2063,16 @@ const styles = StyleSheet.create({
   controlsCard: {
     position: 'absolute',
     top: 80,
-    left: 20,
-    right: 20,
+    left: 12,
+    right: 72,
     backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: 8,
+    padding: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
   },
   controlRow: {
     flexDirection: 'row',
@@ -1682,7 +2087,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   controlLabel: {
-    fontSize: 15,
+    fontSize: 13,
     color: '#000000',
     fontWeight: '600',
   },
@@ -1693,19 +2098,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: 6,
-    marginTop: 12,
-    paddingTop: 12,
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: '#E5E5E5',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   actionButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 5,
     borderRadius: 6,
     backgroundColor: '#F5F5F5',
     gap: 4,
@@ -1716,7 +2121,7 @@ const styles = StyleSheet.create({
     borderColor: '#FFD100',
   },
   actionButtonText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666666',
     fontWeight: '500',
   },
@@ -1727,10 +2132,10 @@ const styles = StyleSheet.create({
   divider: {
     height: 1,
     backgroundColor: '#E5E5E5',
-    marginVertical: 10,
+    marginVertical: 8,
   },
   infoSection: {
-    marginBottom: 10,
+    marginBottom: 8,
   },
   infoHeader: {
     flexDirection: 'row',
@@ -1739,7 +2144,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   infoLabel: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666666',
     fontWeight: '600',
     textTransform: 'uppercase',
@@ -1750,21 +2155,21 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: '#F9F9F9',
-    padding: 8,
+    padding: 6,
     borderRadius: 6,
   },
   infoValue: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#000000',
     flex: 1,
     fontWeight: '500',
   },
   infoPlaceholder: {
-    fontSize: 13,
+    fontSize: 11,
     color: '#999999',
     fontStyle: 'italic',
     backgroundColor: '#F9F9F9',
-    padding: 10,
+    padding: 8,
     borderRadius: 6,
   },
   iconButton: {
@@ -1782,12 +2187,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#FFD100',
-    paddingVertical: 8,
+    paddingVertical: 6,
     alignItems: 'center',
   },
   mapActionText: {
     color: '#5A4A00',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   gpsToggleButton: {
@@ -1799,6 +2204,17 @@ const styles = StyleSheet.create({
     padding: 10,
     borderWidth: 1,
     borderColor: '#FFD100',
+  },
+  liveHudToggleButton: {
+    position: 'absolute',
+    top: 20,
+    right: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    borderRadius: 16,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#FFD100',
+    zIndex: 26,
   },
   menuToggleButton: {
     position: 'absolute',
@@ -1904,43 +2320,43 @@ const styles = StyleSheet.create({
   },
   authorityInfo: {
     position: 'absolute',
-    bottom: 100,
-    left: 20,
-    right: 20,
+    bottom: 84,
+    left: 12,
+    width: '58%',
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
     borderRadius: 8,
-    padding: 12,
-    borderWidth: 2,
+    padding: 8,
+    borderWidth: 1,
     borderColor: '#FFD100',
   },
   authorityHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   authorityTitle: {
     color: '#FFD100',
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: 'bold',
-    marginLeft: 8,
+    marginLeft: 6,
   },
   authorityDetails: {
-    marginBottom: 8,
+    marginBottom: 6,
   },
   authorityText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    marginBottom: 2,
+    fontSize: 11,
+    marginBottom: 1,
   },
   positionInfo: {
     borderTopWidth: 1,
     borderTopColor: '#333333',
-    paddingTop: 8,
+    paddingTop: 6,
   },
   positionText: {
     color: '#CCCCCC',
-    fontSize: 11,
-    marginBottom: 2,
+    fontSize: 10,
+    marginBottom: 1,
   },
   myMarker: {
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
@@ -1962,7 +2378,92 @@ const styles = StyleSheet.create({
     padding: 4,
     borderWidth: 1,
   },
+  layerMarkerSelected: {
+    borderWidth: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    transform: [{ scale: 1.08 }],
+  },
+  assetDetailsPanel: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+    bottom: 70,
+    backgroundColor: 'rgba(0, 0, 0, 0.92)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2A2A2A',
+    padding: 10,
+    zIndex: 25,
+  },
+  assetDetailsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  assetDetailsTitle: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
+    marginRight: 8,
+  },
+  assetDetailsSubtitle: {
+    color: '#FFD100',
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  assetDetailsText: {
+    color: '#D0D0D0',
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  assetDetailsCoords: {
+    color: '#9D9D9D',
+    fontSize: 10,
+    marginBottom: 8,
+  },
+  assetDetailsActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  assetActionButton: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#1A1A1A',
+    borderColor: '#3C3C3C',
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingVertical: 6,
+  },
+  assetActionButtonText: {
+    color: '#EFEFEF',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  unreliableBanner: {
+    position: 'absolute',
+    top: 8,
+    left: 12,
+    right: 12,
+    zIndex: 30,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 214, 10, 0.15)',
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  unreliableBannerText: {
+    color: '#FFD100',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
 });
 
 export default MapScreen;
+
 

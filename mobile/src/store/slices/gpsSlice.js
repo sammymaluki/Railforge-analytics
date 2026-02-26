@@ -24,6 +24,13 @@ const initialState = {
   // GPS quality
   signalStrength: 'unknown', // 'excellent', 'good', 'fair', 'poor', 'unknown'
   satelliteCount: 0,
+  locationReliability: {
+    mode: 'RELIABLE', // RELIABLE | UNRELIABLE
+    reasons: [],
+    pauseAuthorityAlerts: false,
+    message: null,
+    timestamp: null,
+  },
   
   // Error handling
   error: null,
@@ -81,6 +88,16 @@ const gpsSlice = createSlice({
     setSatelliteCount: (state, action) => {
       state.satelliteCount = action.payload;
     },
+    setLocationReliability: (state, action) => {
+      const payload = action.payload || {};
+      state.locationReliability = {
+        mode: payload.mode === 'UNRELIABLE' ? 'UNRELIABLE' : 'RELIABLE',
+        reasons: Array.isArray(payload.reasons) ? payload.reasons : [],
+        pauseAuthorityAlerts: Boolean(payload.pauseAuthorityAlerts),
+        message: payload.message || null,
+        timestamp: payload.timestamp || new Date().toISOString(),
+      };
+    },
     setGpsError: (state, action) => {
       state.error = action.payload;
     },
@@ -106,6 +123,7 @@ export const {
   stopTracking,
   updateTotalDistance,
   setSatelliteCount,
+  setLocationReliability,
   setGpsError,
   clearGpsError,
   resetGpsState,

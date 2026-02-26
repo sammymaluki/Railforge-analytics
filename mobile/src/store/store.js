@@ -14,8 +14,6 @@ const booleanTransform = createTransform(
   },
   // Transform state being rehydrated
   (outboundState, key) => {
-    console.log(`🔄 Rehydrating ${key} slice:`, JSON.stringify(outboundState, null, 2));
-    
     if (!outboundState || typeof outboundState !== 'object') {
       return outboundState;
     }
@@ -25,11 +23,9 @@ const booleanTransform = createTransform(
       if (obj === null || typeof obj !== 'object') {
         // Convert string booleans to actual booleans
         if (obj === 'true') {
-          console.warn(`🔧 Converting string "true" to boolean at ${path}`);
           return true;
         }
         if (obj === 'false') {
-          console.warn(`🔧 Converting string "false" to boolean at ${path}`);
           return false;
         }
         return obj;
@@ -46,9 +42,7 @@ const booleanTransform = createTransform(
       return result;
     };
     
-    const converted = convertBooleans(outboundState);
-    console.log(`✅ Rehydrated ${key} slice (after conversion):`, JSON.stringify(converted, null, 2));
-    return converted;
+    return convertBooleans(outboundState);
   },
   // Apply to these slices
   { whitelist: ['auth', 'settings', 'offline', 'map'] }

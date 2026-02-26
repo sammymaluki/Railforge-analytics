@@ -231,6 +231,8 @@ const AlertsScreen = () => {
                 styles.filterChipText,
                 filter === item && styles.filterChipTextActive,
               ]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
             >
               {item}
             </Text>
@@ -328,14 +330,23 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
+  filterContent: {
+    flexGrow: 1,
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
   filterChip: {
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-    marginHorizontal: theme.spacing.xs,
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.background,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    minHeight: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
   },
   filterChipActive: {
     backgroundColor: theme.colors.accent,

@@ -64,21 +64,21 @@ const ENV = {
     SOCKET_URL: OVERRIDE_SOCKET_URL || null,
     MAPBOX_TOKEN: 'your-mapbox-token',
     GOOGLE_MAPS_API_KEY: 'your-google-maps-api-key',
-    APP_NAME: 'Sidekick (Dev)'
+    APP_NAME: 'RailForge Analytics (Dev)'
   },
   staging: {
-    API_URL: 'https://staging-api.herzog.com/api',
-    SOCKET_URL: 'https://staging-api.herzog.com',
+    API_URL: 'https://staging-api.railforge.com/api',
+    SOCKET_URL: 'https://staging-api.railforge.com',
     MAPBOX_TOKEN: 'your-mapbox-token-staging',
     GOOGLE_MAPS_API_KEY: 'your-google-maps-api-key-staging',
-    APP_NAME: 'Sidekick (Staging)'
+    APP_NAME: 'RailForge Analytics (Staging)'
   },
   production: {
-    API_URL: 'https://api.herzog.com/api',
-    SOCKET_URL: 'https://api.herzog.com',
+    API_URL: 'https://api.railforge.com/api',
+    SOCKET_URL: 'https://api.railforge.com',
     MAPBOX_TOKEN: 'your-mapbox-token-prod',
     GOOGLE_MAPS_API_KEY: 'your-google-maps-api-key-prod',
-    APP_NAME: 'Sidekick'
+    APP_NAME: 'RailForge Analytics'
   }
 };
 

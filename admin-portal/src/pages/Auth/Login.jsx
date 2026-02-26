@@ -136,7 +136,7 @@ const Login = () => {
 
       <Box sx={{ mt: 3, textAlign: 'center' }}>
         <Typography variant="caption" color="textSecondary">
-          For assistance, contact system administrator
+          Administrator access only
         </Typography>
       </Box>
     </Box>

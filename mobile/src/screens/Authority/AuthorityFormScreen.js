@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -24,23 +24,26 @@ import navigationService from '../../navigation/NavigationService';
 import gpsTrackingService from '../../services/gps/GPSTrackingService';
 
 const authoritySchema = yup.object().shape({
-  authorityType: yup.string().required('Authority type is required'),
-  subdivisionId: yup.number().required('Subdivision is required'),
-  beginMP: yup.number()
-    .typeError('Begin milepost must be a number')
-    .required('Begin milepost is required')
-    .positive('Begin milepost must be positive'),
-  endMP: yup.number()
-    .typeError('End milepost must be a number')
-    .required('End milepost is required')
-    .positive('End milepost must be positive')
-    .min(yup.ref('beginMP'), 'End milepost must be greater than or equal to begin milepost'),
-  trackType: yup.string().required('Track type is required'),
-  trackNumber: yup.string().required('Track number is required'),
+  authorityType: yup.string(),
+  subdivisionId: yup.number().nullable(),
+  beginMP: yup.number().typeError('Begin milepost must be a number').nullable(),
+  endMP: yup.number().typeError('End milepost must be a number').nullable(),
+  trackType: yup.string().nullable(),
+  trackNumber: yup.string().nullable(),
   employeeNameDisplay: yup.string(),
   employeeContactDisplay: yup.string(),
   expirationTime: yup.date().nullable(),
 });
+
+const DEFAULT_FIELD_CONFIGS = {
+  employeeName: { label: 'Employee Name', enabled: true, required: false },
+  employeeContact: { label: 'Phone', enabled: true, required: false },
+  subdivision: { label: 'Subdivision', enabled: true, required: true },
+  beginMP: { label: 'Begin MP', enabled: true, required: true },
+  endMP: { label: 'End MP', enabled: true, required: true },
+  trackType: { label: 'Track Type', enabled: true, required: true, options: ['Main', 'Yard', 'Siding', 'Storage', 'X_Over', 'Other'] },
+  trackNumber: { label: 'Track Number', enabled: true, required: true, options: [] },
+};
 
 const AuthorityFormScreen = ({ navigation, route }) => {
   const dispatch = useDispatch();
@@ -49,6 +52,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
   const isCreating = Boolean(authorityState.isCreating);
   const error = authorityState.error;
   const agencyId = user?.Agency_ID ?? user?.agency_id ?? user?.agencyId;
+  const [fieldConfigs, setFieldConfigs] = useState(DEFAULT_FIELD_CONFIGS);
 
   const [subdivisions, setSubdivisions] = useState([]);
   const [trackNumbers, setTrackNumbers] = useState([]);
@@ -67,14 +71,19 @@ const AuthorityFormScreen = ({ navigation, route }) => {
     { label: 'Lone Worker Authority', value: 'Lone_Worker_Authority' },
   ];
 
-  const trackTypes = [
-    { label: 'Main', value: 'Main' },
-    { label: 'Yard', value: 'Yard' },
-    { label: 'Siding', value: 'Siding' },
-    { label: 'Storage', value: 'Storage' },
-    { label: 'X_Over', value: 'X_Over' },
-    { label: 'Other', value: 'Other' },
-  ];
+  const trackTypes = useMemo(() => {
+    const options = Array.isArray(fieldConfigs?.trackType?.options) && fieldConfigs.trackType.options.length
+      ? fieldConfigs.trackType.options
+      : DEFAULT_FIELD_CONFIGS.trackType.options;
+    return options.map((option) => ({
+      label: String(option),
+      value: String(option),
+    }));
+  }, [fieldConfigs]);
+
+  const isFieldEnabled = (fieldKey) => fieldConfigs?.[fieldKey]?.enabled !== false;
+  const isFieldRequired = (fieldKey) => Boolean(fieldConfigs?.[fieldKey]?.required);
+  const getFieldLabel = (fieldKey, fallback) => fieldConfigs?.[fieldKey]?.label || fallback;
 
   const {
     control,
@@ -119,6 +128,32 @@ const AuthorityFormScreen = ({ navigation, route }) => {
     loadSubdivisions();
   }, [agencyId]);
 
+  useEffect(() => {
+    const loadFieldConfigurations = async () => {
+      if (!agencyId) return;
+      try {
+        const response = await apiService.getAuthorityFieldConfigurations(agencyId);
+        const configs = response?.data?.fieldConfigurations || {};
+        setFieldConfigs((prev) => ({
+          ...prev,
+          ...configs,
+          trackType: {
+            ...prev.trackType,
+            ...(configs.trackType || {}),
+          },
+          trackNumber: {
+            ...prev.trackNumber,
+            ...(configs.trackNumber || {}),
+          },
+        }));
+      } catch (configError) {
+        console.warn('Failed to load authority field configuration:', configError);
+      }
+    };
+
+    loadFieldConfigurations();
+  }, [agencyId]);
+
   // Watch subdivision selection to load track numbers
   const selectedSubdivision = watch('subdivisionId');
   useEffect(() => {
@@ -130,7 +165,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
     } else {
       setTrackNumbers([]);
     }
-  }, [selectedSubdivision, agencyId, setValue]);
+  }, [selectedSubdivision, agencyId, setValue, fieldConfigs]);
 
   useEffect(() => {
     if (error) {
@@ -195,7 +230,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
       console.log('Track numbers API response:', response);
       
       if (response.success && response.data) {
-        const trackNumberOptions = response.data
+        const apiTrackNumberOptions = response.data
           .map((track) => {
             const trackType = track.Track_Type ?? track.track_type;
             const trackNumber = track.Track_Number ?? track.track_number;
@@ -203,13 +238,27 @@ const AuthorityFormScreen = ({ navigation, route }) => {
 
             return {
               label: `${trackType} - ${trackNumber}`,
-              value: `${trackType}-${trackNumber}`, // Make unique by combining both
+              value: `${trackType}|||${trackNumber}`,
             };
           })
           .filter(Boolean);
-        
-        setTrackNumbers(trackNumberOptions);
-        console.log('Loaded', trackNumberOptions.length, 'track numbers from API');
+
+        const configuredTrackNumbers = Array.isArray(fieldConfigs?.trackNumber?.options)
+          ? fieldConfigs.trackNumber.options
+              .map((num) => String(num))
+              .filter(Boolean)
+              .map((num) => ({
+                label: num,
+                value: `|||${num}`,
+              }))
+          : [];
+
+        const merged = [...apiTrackNumberOptions, ...configuredTrackNumbers].filter((item, idx, arr) =>
+          arr.findIndex((other) => other.value === item.value) === idx
+        );
+
+        setTrackNumbers(merged);
+        console.log('Loaded', merged.length, 'track numbers from API/config');
       } else {
         setTrackNumbers([]);
       }
@@ -293,11 +342,54 @@ const AuthorityFormScreen = ({ navigation, route }) => {
 
   const onSubmit = async (data) => {
     try {
-      // Parse the combined track number value (format: "TrackType-TrackNumber")
+      // Parse combined track selector value (format: "TrackType|||TrackNumber" or "|||TrackNumber")
+      let trackType = data.trackType;
       let trackNumber = data.trackNumber;
-      if (trackNumber && trackNumber.includes('-')) {
-        // Extract just the track number part after the dash
-        trackNumber = trackNumber.split('-').slice(1).join('-'); // Handle cases like "Main-1-2"
+      if (trackNumber && trackNumber.includes('|||')) {
+        const [trackTypeFromValue, trackNumberFromValue] = trackNumber.split('|||');
+        trackType = trackType || trackTypeFromValue || '';
+        trackNumber = trackNumberFromValue || '';
+      }
+
+      const validationErrors = [];
+
+      if (isFieldEnabled('subdivision') && isFieldRequired('subdivision') && !data.subdivisionId) {
+        validationErrors.push(`${getFieldLabel('subdivision', 'Subdivision')} is required`);
+      }
+      if (isFieldEnabled('beginMP') && isFieldRequired('beginMP') && (data.beginMP === undefined || data.beginMP === null || data.beginMP === '')) {
+        validationErrors.push(`${getFieldLabel('beginMP', 'Begin MP')} is required`);
+      }
+      if (isFieldEnabled('endMP') && isFieldRequired('endMP') && (data.endMP === undefined || data.endMP === null || data.endMP === '')) {
+        validationErrors.push(`${getFieldLabel('endMP', 'End MP')} is required`);
+      }
+      if (isFieldEnabled('trackType') && isFieldRequired('trackType') && !trackType) {
+        validationErrors.push(`${getFieldLabel('trackType', 'Track Type')} is required`);
+      }
+      if (isFieldEnabled('trackNumber') && isFieldRequired('trackNumber') && !trackNumber) {
+        validationErrors.push(`${getFieldLabel('trackNumber', 'Track Number')} is required`);
+      }
+
+      const beginMP = Number.parseFloat(data.beginMP);
+      const endMP = Number.parseFloat(data.endMP);
+      if (isFieldEnabled('beginMP') && Number.isNaN(beginMP)) {
+        validationErrors.push(`${getFieldLabel('beginMP', 'Begin MP')} must be numeric`);
+      }
+      if (isFieldEnabled('endMP') && Number.isNaN(endMP)) {
+        validationErrors.push(`${getFieldLabel('endMP', 'End MP')} must be numeric`);
+      }
+      if (
+        isFieldEnabled('beginMP') &&
+        isFieldEnabled('endMP') &&
+        !Number.isNaN(beginMP) &&
+        !Number.isNaN(endMP) &&
+        endMP < beginMP
+      ) {
+        validationErrors.push(`${getFieldLabel('endMP', 'End MP')} must be greater than or equal to ${getFieldLabel('beginMP', 'Begin MP')}`);
+      }
+
+      if (validationErrors.length) {
+        Alert.alert('Validation', validationErrors.join('\n'));
+        return;
       }
 
       let normalizedExpirationTime;
@@ -310,8 +402,15 @@ const AuthorityFormScreen = ({ navigation, route }) => {
       
       const authorityData = {
         ...data,
-        trackNumber, // Use the extracted track number
+        trackType,
+        trackNumber,
       };
+
+      // Remove disabled fields from payload so backend applies agency defaults.
+      if (!isFieldEnabled('employeeName')) delete authorityData.employeeNameDisplay;
+      if (!isFieldEnabled('employeeContact')) delete authorityData.employeeContactDisplay;
+      if (!isFieldEnabled('trackType')) delete authorityData.trackType;
+      if (!isFieldEnabled('trackNumber')) delete authorityData.trackNumber;
 
       if (normalizedExpirationTime) {
         authorityData.expirationTime = normalizedExpirationTime;
@@ -382,15 +481,21 @@ const AuthorityFormScreen = ({ navigation, route }) => {
     }
   };
 
-  const renderFormField = (name, label, renderInput) => (
+  const renderFormField = (name, label, renderInput, required = false) => (
     <View style={styles.fieldContainer}>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={styles.label}>
+        {label}{required ? ' *' : ''}
+      </Text>
       {renderInput}
       {errors[name] && (
         <Text style={styles.errorText}>{errors[name]?.message}</Text>
       )}
     </View>
   );
+
+  const showBeginMP = isFieldEnabled('beginMP');
+  const showEndMP = isFieldEnabled('endMP');
+  const milepostColumnStyle = showBeginMP && showEndMP ? styles.halfWidth : styles.fullWidth;
 
   return (
     <ScrollView style={styles.container}>
@@ -421,7 +526,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
         ))}
 
         {/* Subdivision */}
-        {renderFormField('subdivisionId', 'Subdivision', (
+        {isFieldEnabled('subdivision') && renderFormField('subdivisionId', getFieldLabel('subdivision', 'Subdivision'), (
           <Controller
             control={control}
             name="subdivisionId"
@@ -445,49 +550,55 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               />
             )}
           />
-        ))}
+        ), isFieldRequired('subdivision'))}
 
         {/* Milepost Range */}
-        <View style={styles.row}>
-          <View style={[styles.fieldContainer, styles.halfWidth]}>
-            {renderFormField('beginMP', 'Begin Milepost', (
-              <Controller
-                control={control}
-                name="beginMP"
-                render={({ field: { onChange, value } }) => (
-                  <TextInput
-                    style={[styles.input, errors.beginMP && styles.inputError]}
-                    placeholder="e.g., 1.0"
-                    value={value?.toString()}
-                    onChangeText={onChange}
-                    keyboardType="numeric"
+        {(isFieldEnabled('beginMP') || isFieldEnabled('endMP')) && (
+          <View style={styles.row}>
+            {isFieldEnabled('beginMP') && (
+              <View style={[styles.fieldContainer, milepostColumnStyle]}>
+                {renderFormField('beginMP', getFieldLabel('beginMP', 'Begin Milepost'), (
+                  <Controller
+                    control={control}
+                    name="beginMP"
+                    render={({ field: { onChange, value } }) => (
+                      <TextInput
+                        style={[styles.input, errors.beginMP && styles.inputError]}
+                        placeholder="e.g., 1.0"
+                        value={value?.toString()}
+                        onChangeText={onChange}
+                        keyboardType="numeric"
+                      />
+                    )}
                   />
-                )}
-              />
-            ))}
-          </View>
-          
-          <View style={[styles.fieldContainer, styles.halfWidth]}>
-            {renderFormField('endMP', 'End Milepost', (
-              <Controller
-                control={control}
-                name="endMP"
-                render={({ field: { onChange, value } }) => (
-                  <TextInput
-                    style={[styles.input, errors.endMP && styles.inputError]}
-                    placeholder="e.g., 7.0"
-                    value={value?.toString()}
-                    onChangeText={onChange}
-                    keyboardType="numeric"
+                ), isFieldRequired('beginMP'))}
+              </View>
+            )}
+
+            {isFieldEnabled('endMP') && (
+              <View style={[styles.fieldContainer, milepostColumnStyle]}>
+                {renderFormField('endMP', getFieldLabel('endMP', 'End Milepost'), (
+                  <Controller
+                    control={control}
+                    name="endMP"
+                    render={({ field: { onChange, value } }) => (
+                      <TextInput
+                        style={[styles.input, errors.endMP && styles.inputError]}
+                        placeholder="e.g., 7.0"
+                        value={value?.toString()}
+                        onChangeText={onChange}
+                        keyboardType="numeric"
+                      />
+                    )}
                   />
-                )}
-              />
-            ))}
+                ), isFieldRequired('endMP'))}
+              </View>
+            )}
           </View>
-        </View>
+        )}
 
         {/* Track Type */}
-        {renderFormField('trackType', 'Track Type', (
+        {isFieldEnabled('trackType') && renderFormField('trackType', getFieldLabel('trackType', 'Track Type'), (
           <Controller
             control={control}
             name="trackType"
@@ -509,10 +620,10 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               />
             )}
           />
-        ))}
+        ), isFieldRequired('trackType'))}
 
         {/* Track Number */}
-        {renderFormField('trackNumber', 'Track Number', (
+        {isFieldEnabled('trackNumber') && renderFormField('trackNumber', getFieldLabel('trackNumber', 'Track Number'), (
           <Controller
             control={control}
             name="trackNumber"
@@ -535,10 +646,10 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               />
             )}
           />
-        ))}
+        ), isFieldRequired('trackNumber'))}
 
         {/* Display Name */}
-        {renderFormField('employeeNameDisplay', 'Display Name (Optional)', (
+        {isFieldEnabled('employeeName') && renderFormField('employeeNameDisplay', getFieldLabel('employeeName', 'Employee Name'), (
           <Controller
             control={control}
             name="employeeNameDisplay"
@@ -551,10 +662,10 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               />
             )}
           />
-        ))}
+        ), isFieldRequired('employeeName'))}
 
         {/* Display Contact */}
-        {renderFormField('employeeContactDisplay', 'Display Contact (Optional)', (
+        {isFieldEnabled('employeeContact') && renderFormField('employeeContactDisplay', getFieldLabel('employeeContact', 'Phone'), (
           <Controller
             control={control}
             name="employeeContactDisplay"
@@ -568,7 +679,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
               />
             )}
           />
-        ))}
+        ), isFieldRequired('employeeContact'))}
 
         {/* Expiration Time */}
         <View style={styles.fieldContainer}>
@@ -642,7 +753,7 @@ const AuthorityFormScreen = ({ navigation, route }) => {
           ) : (
             <>
               <MaterialCommunityIcons name="clipboard-check" size={24} color="#000000" />
-              <Text style={styles.submitButtonText}>Create Authority</Text>
+              <Text style={styles.submitButtonText}>Activate Authority</Text>
             </>
           )}
         </TouchableOpacity>
@@ -698,6 +809,9 @@ const styles = StyleSheet.create({
   },
   halfWidth: {
     width: '48%',
+  },
+  fullWidth: {
+    width: '100%',
   },
   errorText: {
     color: '#FF4444',

@@ -1,5 +1,27 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import apiService from '../../services/api/ApiService';
+import { resolveMediaUri } from '../../utils/media';
+
+const parsePhotoUrls = (pin) => {
+  const source = pin.Photo_URLs || pin.photoUrls;
+  if (!source) {
+    const fallback = resolveMediaUri(pin.Photo_URL || pin.photo_url || pin.photoUrl);
+    return fallback ? [fallback] : [];
+  }
+  if (Array.isArray(source)) {
+    return source.map((url) => resolveMediaUri(url)).filter(Boolean);
+  }
+  try {
+    const parsed = JSON.parse(source);
+    if (Array.isArray(parsed)) {
+      return parsed.map((url) => resolveMediaUri(url)).filter(Boolean);
+    }
+  } catch (error) {
+    // Ignore invalid payloads and fallback to Photo_URL.
+  }
+  const fallback = resolveMediaUri(pin.Photo_URL || pin.photo_url || pin.photoUrl);
+  return fallback ? [fallback] : [];
+};
 
 // Async thunks
 export const fetchPins = createAsyncThunk(
@@ -84,8 +106,8 @@ const pinSlice = createSlice({
       state.pins.push({
         ...action.payload,
         id: action.payload.id || `temp_${Date.now()}`,
-        syncPending: true,
-        createdAt: new Date().toISOString(),
+        syncPending: action.payload.syncPending ?? true,
+        createdAt: action.payload.createdAt || new Date().toISOString(),
       });
     },
     updatePin: (state, action) => {
@@ -123,20 +145,24 @@ const pinSlice = createSlice({
         // API returns { success: true, data: [...] }
         const pinsData = action.payload.data || action.payload;
         console.log('Fetched pins in reducer:', pinsData);
-        state.pins = Array.isArray(pinsData) ? pinsData.map(pin => ({
-          id: pin.Pin_ID,
-          pinTypeId: pin.Pin_Type_ID,
-          category: pin.Pin_Category || pin.Type_Name || 'Unknown',
-          latitude: pin.Latitude,
-          longitude: pin.Longitude,
-          trackType: pin.Track_Type,
-          trackNumber: pin.Track_Number,
-          milepost: pin.MP,
-          notes: pin.Notes,
-          photoUri: pin.Photo_URL,
-          timestamp: pin.Created_Date,
-          syncPending: false
-        })) : [];
+        state.pins = Array.isArray(pinsData) ? pinsData.map(pin => {
+          const photoUrls = parsePhotoUrls(pin);
+          return {
+            id: pin.Pin_ID,
+            pinTypeId: pin.Pin_Type_ID,
+            category: pin.Pin_Category || pin.Type_Name || 'Unknown',
+            latitude: pin.Latitude,
+            longitude: pin.Longitude,
+            trackType: pin.Track_Type,
+            trackNumber: pin.Track_Number,
+            milepost: pin.MP,
+            notes: pin.Notes,
+            photos: photoUrls.map((uri) => ({ uri })),
+            photoUri: photoUrls[0] || null,
+            timestamp: pin.Created_Date,
+            syncPending: false
+          };
+        }) : [];
       })
       .addCase(fetchPins.rejected, (state, action) => {
         state.loading = false;

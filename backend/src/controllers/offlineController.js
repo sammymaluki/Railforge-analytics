@@ -3,6 +3,7 @@ const Agency = require('../models/Agency');
 const { logger } = require('../config/logger');
 const db = require('../config/database');
 const sql = require('mssql');
+const { canAccessAgency } = require('../utils/rbac');
 
 const TRANSIENT_DB_CODES = new Set(['ESOCKET', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,7 +62,7 @@ class OfflineController {
       const deviceId = req.headers['x-device-id'] || 'unknown';
 
       // Verify user has access to this agency
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied to this agency data'
@@ -109,7 +110,7 @@ class OfflineController {
       const deviceId = req.headers['x-device-id'] || 'unknown';
 
       // Verify access
-      if (user.Role !== 'Administrator' && user.Agency_ID !== parseInt(agencyId)) {
+      if (!canAccessAgency(user, parseInt(agencyId))) {
         return res.status(403).json({
           success: false,
           error: 'Access denied'

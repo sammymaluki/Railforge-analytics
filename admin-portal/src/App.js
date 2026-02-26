@@ -30,6 +30,7 @@ import Authorities from './pages/Authorities';
 // Services
 import { verifyToken } from './store/slices/authSlice';
 import { loadBranding } from './store/slices/settingsSlice';
+import { isGlobalAdmin, getAgencyId } from './utils/rbac';
 
 // Default theme
 const defaultTheme = createTheme({
@@ -84,7 +85,7 @@ const AppContent = () => {
   const { branding } = useSelector((state) => state.settings);
 
   useEffect(() => {
-    const initApp = async () => {
+    const verifyExistingToken = async () => {
       try {
         // Check for existing token
         const token = localStorage.getItem('admin_token');
@@ -97,11 +98,6 @@ const AppContent = () => {
             console.log('Token expired or invalid');
           }
         }
-        
-        // Load branding if authenticated
-        if (isAuthenticated && user?.agencyId) {
-          await dispatch(loadBranding(user.agencyId));
-        }
       } catch (error) {
         console.error('App initialization error:', error);
       } finally {
@@ -109,8 +105,15 @@ const AppContent = () => {
       }
     };
 
-    initApp();
+    verifyExistingToken();
   }, [dispatch]);
+
+  useEffect(() => {
+    const agencyId = getAgencyId(user);
+    if (isAuthenticated && agencyId) {
+      dispatch(loadBranding(agencyId));
+    }
+  }, [dispatch, isAuthenticated, user]);
 
   const theme = branding?.primaryColor 
     ? createTheme({
@@ -158,7 +161,14 @@ const AppContent = () => {
             </ProtectedRoute>
           }>
             <Route index element={<Dashboard />} />
-            <Route path="agencies" element={<Agencies />} />
+            <Route
+              path="agencies"
+              element={(
+                <ProtectedRoute globalOnly>
+                  <Agencies />
+                </ProtectedRoute>
+              )}
+            />
             <Route path="agencies/:agencyId" element={<AgencyDetails />} />
             <Route path="users" element={<Users />} />
             <Route path="authorities" element={<Authorities />} />
@@ -179,11 +189,15 @@ const AppContent = () => {
   );
 };
 
-const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated } = useSelector((state) => state.auth);
+const ProtectedRoute = ({ children, globalOnly = false }) => {
+  const { isAuthenticated, user } = useSelector((state) => state.auth);
   
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (globalOnly && !isGlobalAdmin(user)) {
+    return <Navigate to="/" replace />;
   }
   
   return children;

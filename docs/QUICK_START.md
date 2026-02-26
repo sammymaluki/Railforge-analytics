@@ -31,12 +31,8 @@ EXIT
 cd backend
 npm install
 npm run db:migrate
+npm run db:seed
 
-# Backend Setup
-cd backend
-
-# Install dependencies
-npm install
 
 # Configure environment
 cp .env.example .env
@@ -76,36 +72,14 @@ curl -X POST http://localhost:5000/api/auth/login \
 
 
 
-## **Step 8: Start the Development Environment**
-
-```bash
-# Open two terminal windows
-
-# Terminal 1: Start the backend
-cd herzog/backend
-npm install
-npm run db:migrate
-npm run dev
-
 # Terminal 2: Start the admin portal
 cd herzog/admin-portal
 npm install
 npm start
 
 
-# Open VS Code with workspace
-code herzog-rail-authority.code-workspace
-
-# Or open individual folders
-code backend/
-code admin-portal/
-
-
-# Run all migrations
-npm run db:migrate
-
 # Run seed data
-npm run db:seed
+
 
 # Import full Metro Link Excel data (tracks + mileposts)
 # If the file is in swl/seeds:

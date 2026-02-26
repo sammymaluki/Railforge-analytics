@@ -30,6 +30,7 @@ import { CONFIG } from '../../constants/config';
 import apiService from '../../services/api/ApiService';
 import permissionManager from '../../utils/permissionManager';
 import logger from '../../utils/logger';
+import { resolveMediaUri } from '../../utils/media';
 
 const getAgencyIdFromUser = (user) => {
   if (!user) return null;
@@ -73,7 +74,36 @@ const normalizePhotoAsset = (asset) => {
     uploadUri: asset.uri,
     mimeType: asset.mimeType || 'image/jpeg',
     fileName: asset.fileName || `pin_${Date.now()}.jpg`,
+    metadata: {
+      capturedAt: new Date().toISOString(),
+      gpsAccuracyAtCapture: null
+    }
   };
+};
+
+const extractPinPhotos = (pin) => {
+  if (!pin) return [];
+
+  const parsedUrls = (() => {
+    const source = pin.Photo_URLs || pin.photoUrls;
+    if (!source) return [];
+    if (Array.isArray(source)) return source;
+    if (typeof source !== 'string') return [];
+    try {
+      const parsed = JSON.parse(source);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  })();
+
+  const fallbackUrl = pin.photoUri || pin.Photo_URL || pin.photoUrl || pin.photo_url;
+  const urls = parsedUrls.length > 0 ? parsedUrls : (fallbackUrl ? [fallbackUrl] : []);
+
+  return urls
+    .map((url) => resolveMediaUri(url))
+    .filter(Boolean)
+    .map((uri) => ({ uri, uploadUri: uri, metadata: null }));
 };
 
 const PinDropScreen = ({ navigation, route }) => {
@@ -87,7 +117,7 @@ const PinDropScreen = ({ navigation, route }) => {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [notes, setNotes] = useState('');
-  const [photo, setPhoto] = useState(null);
+  const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingLocation, setLoadingLocation] = useState(true);
   
@@ -96,6 +126,7 @@ const PinDropScreen = ({ navigation, route }) => {
   const [track, setTrack] = useState(null);
   const [milepost, setMilepost] = useState(null);
   const [timestamp] = useState(new Date().toISOString());
+  const selectedPinType = pinCategories.find((category) => String(category.Pin_Type_ID) === String(selectedCategory));
 
   useEffect(() => {
     if (user?.token) {
@@ -120,14 +151,16 @@ const PinDropScreen = ({ navigation, route }) => {
     );
     setNotes(editingPin.notes || editingPin.Notes || '');
 
-    if (editingPin.photoUri || editingPin.Photo_URL) {
-      setPhoto({ uri: editingPin.photoUri || editingPin.Photo_URL });
-    }
+    setPhotos(extractPinPhotos(editingPin));
 
     const lat = editingPin.latitude ?? editingPin.Latitude;
     const lng = editingPin.longitude ?? editingPin.Longitude;
     if (lat != null && lng != null) {
-      setLocation({ latitude: Number(lat), longitude: Number(lng) });
+      setLocation({
+        latitude: Number(lat),
+        longitude: Number(lng),
+        accuracy: editingPin.accuracy ?? editingPin.Accuracy ?? null
+      });
       setLoadingLocation(false);
     }
 
@@ -183,7 +216,12 @@ const PinDropScreen = ({ navigation, route }) => {
           Type_Name: pt.Type_Name || pt.typeName || `${pt.Pin_Category || pt.category || 'General'} - ${pt.Pin_Subtype || pt.subtype || 'General'}`,
           Pin_Category: pt.Pin_Category ?? pt.category ?? 'General',
           Pin_Subtype: pt.Pin_Subtype ?? pt.subtype ?? 'General',
-          Color: pt.Color ?? pt.color ?? '#FF7A00'
+          Color: pt.Color ?? pt.color ?? '#FF7A00',
+          Photos_Enabled: pt.Photos_Enabled ?? pt.photosEnabled ?? true,
+          Photo_Required: pt.Photo_Required ?? pt.photoRequired ?? false,
+          Max_Photos: pt.Max_Photos ?? pt.maxPhotos ?? 1,
+          Max_Photo_Size_MB: pt.Max_Photo_Size_MB ?? pt.maxPhotoSizeMb ?? 10,
+          Photo_Compression_Quality: pt.Photo_Compression_Quality ?? pt.photoCompressionQuality ?? 80
         }))
         .filter((pt) => Number.isFinite(Number(pt.Pin_Type_ID)));
 
@@ -217,6 +255,7 @@ const PinDropScreen = ({ navigation, route }) => {
       setLocation({
         latitude: position.coords.latitude,
         longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy ?? null
       });
 
       // Get track and milepost if we have subdivision data
@@ -262,7 +301,13 @@ const PinDropScreen = ({ navigation, route }) => {
       if (!result.canceled && result.assets?.[0]) {
         const normalized = normalizePhotoAsset(result.assets[0]);
         if (normalized) {
-          setPhoto(normalized);
+          const maxPhotos = Number(selectedPinType?.Max_Photos || 1);
+          if (photos.length >= maxPhotos) {
+            Alert.alert('Photo Limit Reached', `This category allows up to ${maxPhotos} photo(s).`);
+            return;
+          }
+          normalized.metadata.gpsAccuracyAtCapture = location?.accuracy ?? null;
+          setPhotos((currentPhotos) => [...currentPhotos, normalized]);
         }
       }
     } catch (error) {
@@ -290,7 +335,13 @@ const PinDropScreen = ({ navigation, route }) => {
       if (!result.canceled && result.assets?.[0]) {
         const normalized = normalizePhotoAsset(result.assets[0]);
         if (normalized) {
-          setPhoto(normalized);
+          const maxPhotos = Number(selectedPinType?.Max_Photos || 1);
+          if (photos.length >= maxPhotos) {
+            Alert.alert('Photo Limit Reached', `This category allows up to ${maxPhotos} photo(s).`);
+            return;
+          }
+          normalized.metadata.gpsAccuracyAtCapture = location?.accuracy ?? null;
+          setPhotos((currentPhotos) => [...currentPhotos, normalized]);
         }
       }
     } catch (error) {
@@ -309,6 +360,18 @@ const PinDropScreen = ({ navigation, route }) => {
       Alert.alert('Error', 'Location not available. Please try again.');
       return;
     }
+    if (selectedPinType?.Photos_Enabled === false && photos.length > 0) {
+      Alert.alert('Validation Error', 'Photos are disabled for the selected category');
+      return;
+    }
+    if (selectedPinType?.Photo_Required && photos.length === 0) {
+      Alert.alert('Validation Error', 'At least one photo is required for the selected category');
+      return;
+    }
+    if (photos.length > Number(selectedPinType?.Max_Photos || 1)) {
+      Alert.alert('Validation Error', `This category allows up to ${selectedPinType?.Max_Photos || 1} photos`);
+      return;
+    }
 
     const agencyId = getAgencyIdFromUser(user);
     if (!agencyId) {
@@ -316,10 +379,12 @@ const PinDropScreen = ({ navigation, route }) => {
       return;
     }
 
+    let pinData = null;
+
     try {
       setLoading(true);
 
-      const pinData = {
+      pinData = {
         userId: user.User_ID,
         agencyId,
         authorityId: currentAuthority?.Authority_ID || null,
@@ -330,7 +395,8 @@ const PinDropScreen = ({ navigation, route }) => {
         trackNumber: track?.number || null,
         mp: milepost || null,
         notes: notes || null,
-        photoUrl: photo?.uploadUri || photo?.uri || null,
+        photoUrl: null,
+        photos: [],
         timestamp: timestamp,
       };
 
@@ -338,31 +404,43 @@ const PinDropScreen = ({ navigation, route }) => {
       logger.info('Pins', 'Selected category ID:', selectedCategory);
       logger.info('Pins', 'Available categories:', pinCategories);
 
-      // Upload photo if exists
-      const uploadSourceUri = photo?.uploadUri || photo?.uri;
-      const shouldUploadPhoto = Boolean(uploadSourceUri && String(uploadSourceUri).startsWith('file:'));
+      for (const item of photos) {
+        const uploadSourceUri = item?.uploadUri || item?.uri || null;
+        const isLocalUploadUri = Boolean(
+          uploadSourceUri &&
+          (uploadSourceUri.startsWith('file:') || uploadSourceUri.startsWith('content:'))
+        );
 
-      if (shouldUploadPhoto) {
-        const formData = new FormData();
-        formData.append('photo', {
-          uri: uploadSourceUri,
-          type: photo.mimeType || 'image/jpeg',
-          name: photo.fileName || `pin_${Date.now()}.jpg`,
-        });
-        
-        // Add authorityId if available
-        if (currentAuthority?.Authority_ID) {
-          formData.append('authorityId', currentAuthority.Authority_ID.toString());
+        let resolvedUrl = item?.uri || null;
+
+        if (isLocalUploadUri) {
+          const formData = new FormData();
+          formData.append('photo', {
+            uri: uploadSourceUri,
+            type: item.mimeType || 'image/jpeg',
+            name: item.fileName || `pin_${Date.now()}.jpg`,
+          });
+
+          if (currentAuthority?.Authority_ID) {
+            formData.append('authorityId', currentAuthority.Authority_ID.toString());
+          }
+          formData.append('pinTypeId', String(parseInt(selectedCategory, 10)));
+
+          const uploadData = await apiService.uploadPinPhoto(formData);
+          resolvedUrl = uploadData?.data?.url || uploadData?.url || resolvedUrl;
         }
 
-        const uploadData = await apiService.uploadPinPhoto(formData);
-        logger.info('Pins', 'Photo upload response:', uploadData);
-        if (uploadData.data?.url) {
-          pinData.photoUrl = uploadData.data.url;
-        } else if (uploadData.url) {
-          pinData.photoUrl = uploadData.url;
+        if (resolvedUrl) {
+          pinData.photos.push({
+            url: resolvedUrl,
+            metadata: item.metadata || {
+              capturedAt: new Date().toISOString(),
+              gpsAccuracyAtCapture: location?.accuracy ?? null
+            }
+          });
         }
       }
+      pinData.photoUrl = pinData.photos[0]?.url || null;
 
       // Save pin to backend
       const pinId = editingPin?.id || editingPin?.Pin_ID;
@@ -372,18 +450,30 @@ const PinDropScreen = ({ navigation, route }) => {
 
       // Add to Redux state with proper field mapping
       const pinToSave = savedPin.data || savedPin;
+      const resolvedPhotoUri = resolveMediaUri(
+        pinToSave.Photo_URL ||
+        pinToSave.photo_url ||
+        pinToSave.photoUrl ||
+        pinData.photoUrl
+      );
+      const savedPhotos = extractPinPhotos({
+        ...pinToSave,
+        Photo_URL: pinToSave.Photo_URL || pinData.photoUrl,
+        Photo_URLs: pinToSave.Photo_URLs || JSON.stringify(pinData.photos.map((photoItem) => photoItem.url))
+      });
       const mappedPin = {
-        id: pinToSave.Pin_ID,
-        pinTypeId: pinToSave.Pin_Type_ID,
+        id: pinToSave.Pin_ID || pinToSave.pinId || pinId || `temp_${Date.now()}`,
+        pinTypeId: pinToSave.Pin_Type_ID || pinToSave.pinTypeId || parseInt(selectedCategory, 10),
         category: selectedCategory ? pinCategories.find(c => c.Pin_Type_ID === parseInt(selectedCategory))?.Type_Name : 'Unknown',
-        latitude: pinToSave.Latitude,
-        longitude: pinToSave.Longitude,
-        trackType: pinToSave.Track_Type,
-        trackNumber: pinToSave.Track_Number,
-        milepost: pinToSave.MP,
-        notes: pinToSave.Notes,
-        photoUri: pinToSave.Photo_URL,
-        timestamp: pinToSave.Created_Date || timestamp,
+        latitude: pinToSave.Latitude ?? pinToSave.latitude ?? location.latitude,
+        longitude: pinToSave.Longitude ?? pinToSave.longitude ?? location.longitude,
+        trackType: pinToSave.Track_Type ?? pinToSave.trackType ?? track?.type ?? null,
+        trackNumber: pinToSave.Track_Number ?? pinToSave.trackNumber ?? track?.number ?? null,
+        milepost: pinToSave.MP ?? pinToSave.mp ?? milepost ?? null,
+        notes: pinToSave.Notes ?? pinToSave.notes ?? notes ?? null,
+        photoUri: resolvedPhotoUri,
+        photos: savedPhotos,
+        timestamp: pinToSave.Created_Date || pinToSave.createdDate || timestamp,
         syncPending: false
       };
 
@@ -413,7 +503,8 @@ const PinDropScreen = ({ navigation, route }) => {
         trackNumber: track?.number,
         milepost: milepost,
         notes: notes,
-        photoUri: photo?.uri,
+        photoUri: photos[0]?.uri || null,
+        photos,
         timestamp: timestamp,
         syncPending: true,
         _pendingData: pinData // Keep original data for sync
@@ -483,29 +574,39 @@ const PinDropScreen = ({ navigation, route }) => {
 
         {/* Photo Capture */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Photo (Optional)</Text>
+          <Text style={styles.sectionTitle}>
+            Photos {selectedPinType?.Photo_Required ? '(Required)' : '(Optional)'}
+          </Text>
           <View style={styles.photoContainer}>
-            {photo ? (
-              <View style={styles.photoPreview}>
-                <Image source={{ uri: photo.uri }} style={styles.photoImage} />
-                <TouchableOpacity
-                  style={styles.removePhotoButton}
-                  onPress={() => setPhoto(null)}
-                >
-                  <Ionicons name="close-circle" size={32} color={COLORS.error} />
-                </TouchableOpacity>
-              </View>
+            {selectedPinType?.Photos_Enabled === false ? (
+              <Text style={styles.infoValue}>Photos are disabled for this category.</Text>
             ) : (
-              <View style={styles.photoButtons}>
-                <TouchableOpacity style={styles.photoButton} onPress={takePhoto}>
-                  <Ionicons name="camera" size={32} color={COLORS.accent} />
-                  <Text style={styles.photoButtonText}>Take Photo</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.photoButton} onPress={pickPhoto}>
-                  <Ionicons name="images" size={32} color={COLORS.accent} />
-                  <Text style={styles.photoButtonText}>Choose Photo</Text>
-                </TouchableOpacity>
-              </View>
+              <>
+                <View style={styles.photoButtons}>
+                  <TouchableOpacity style={styles.photoButton} onPress={takePhoto}>
+                    <Ionicons name="camera" size={32} color={COLORS.accent} />
+                    <Text style={styles.photoButtonText}>Take Photo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.photoButton} onPress={pickPhoto}>
+                    <Ionicons name="images" size={32} color={COLORS.accent} />
+                    <Text style={styles.photoButtonText}>Choose Photo</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.infoValue}>
+                  {photos.length}/{Number(selectedPinType?.Max_Photos || 1)} selected
+                </Text>
+                {photos.map((item, index) => (
+                  <View key={`${item.uri}_${index}`} style={styles.photoPreview}>
+                    <Image source={{ uri: item.uri }} style={styles.photoImage} />
+                    <TouchableOpacity
+                      style={styles.removePhotoButton}
+                      onPress={() => setPhotos((currentPhotos) => currentPhotos.filter((_, photoIndex) => photoIndex !== index))}
+                    >
+                      <Ionicons name="close-circle" size={32} color={COLORS.error} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </>
             )}
           </View>
         </View>
@@ -687,6 +788,7 @@ const styles = StyleSheet.create({
     position: 'relative',
     borderRadius: BORDER_RADIUS.md,
     overflow: 'hidden',
+    marginTop: SPACING.sm,
   },
   photoImage: {
     width: '100%',

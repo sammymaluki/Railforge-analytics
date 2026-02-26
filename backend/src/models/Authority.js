@@ -119,7 +119,7 @@ class Authority extends BaseModel {
     return inputType;
   }
 
-  async getActiveAuthorities(subdivisionId = null, trackType = null, trackNumber = null) {
+  async getActiveAuthorities(subdivisionId = null, trackType = null, trackNumber = null, agencyId = null) {
     let query = `
       SELECT 
         a.*,
@@ -156,6 +156,11 @@ class Authority extends BaseModel {
       params.trackNumber = trackNumber;
     }
 
+    if (agencyId) {
+      query += ' AND ag.Agency_ID = @agencyId';
+      params.agencyId = agencyId;
+    }
+
     query += ' ORDER BY a.Start_Time DESC';
 
     const result = await this.executeQuery(query, params);
@@ -170,6 +175,7 @@ class Authority extends BaseModel {
         u.Employee_Contact,
         u.Username,
         u.Email,
+        ag.Agency_ID,
         s.Subdivision_Code,
         s.Subdivision_Name,
         ag.Agency_CD,
@@ -436,6 +442,21 @@ class Authority extends BaseModel {
 
     const result = await this.executeQuery(query, { agencyId });
     return result.recordset;
+  }
+
+  async getOverlapById(overlapId) {
+    const query = `
+      SELECT TOP 1
+        ao.Overlap_ID,
+        s1.Agency_ID
+      FROM Authority_Overlaps ao
+      INNER JOIN Authorities a1 ON ao.Authority1_ID = a1.Authority_ID
+      INNER JOIN Subdivisions s1 ON a1.Subdivision_ID = s1.Subdivision_ID
+      WHERE ao.Overlap_ID = @overlapId
+    `;
+
+    const result = await this.executeQuery(query, { overlapId });
+    return result.recordset[0] || null;
   }
 
   async resolveOverlap(overlapId, notes = null) {

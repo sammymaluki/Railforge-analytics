@@ -65,6 +65,42 @@ const AuthorityFieldConfig = () => {
     }));
   };
 
+  const updateNestedConfig = (fieldName, property, value) => {
+    setFieldConfigs((prev) => ({
+      ...prev,
+      notificationSettings: {
+        ...(prev.notificationSettings || {}),
+        [fieldName]: {
+          ...(prev.notificationSettings?.[fieldName] || {}),
+          [property]: value,
+        },
+      },
+    }));
+  };
+
+  const updateGpsSafetyNested = (property, value) => {
+    setFieldConfigs((prev) => ({
+      ...prev,
+      gpsSafetyAlerts: {
+        ...(prev.gpsSafetyAlerts || {}),
+        [property]: value,
+      },
+    }));
+  };
+
+  const updateGpsSafetyAlertType = (property, value) => {
+    setFieldConfigs((prev) => ({
+      ...prev,
+      gpsSafetyAlerts: {
+        ...(prev.gpsSafetyAlerts || {}),
+        alertTypes: {
+          ...(prev.gpsSafetyAlerts?.alertTypes || {}),
+          [property]: value,
+        },
+      },
+    }));
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError(null);
@@ -142,7 +178,9 @@ const AuthorityFieldConfig = () => {
       </Alert>
 
       <Grid container spacing={3}>
-        {Object.entries(fieldConfigs).map(([fieldName, config]) => (
+        {Object.entries(fieldConfigs)
+          .filter(([fieldName]) => !['notificationSettings', 'gpsSafetyAlerts', 'gpsAccuracyMonitoring'].includes(fieldName))
+          .map(([fieldName, config]) => (
           <Grid item xs={12} key={fieldName}>
             <Paper sx={{ p: 2, bgcolor: '#1E1E1E' }}>
               <Grid container spacing={2} alignItems="center">
@@ -219,6 +257,283 @@ const AuthorityFieldConfig = () => {
             </Paper>
           </Grid>
         ))}
+
+        {fieldConfigs.notificationSettings && (
+          <Grid item xs={12}>
+            <Paper sx={{ p: 2, bgcolor: '#1E1E1E' }}>
+              <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                Notification Policy
+              </Typography>
+              <Typography variant="caption" color="textSecondary" display="block" sx={{ mb: 2 }}>
+                Admin controls push, visual, audio/vibration behavior, quiet hours, and shift suppression rules.
+              </Typography>
+
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings.enabled !== false}
+                        onChange={(e) => handleFieldChange('notificationSettings', 'enabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Notifications Enabled"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings.pushEnabled !== false}
+                        onChange={(e) => handleFieldChange('notificationSettings', 'pushEnabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Push Enabled"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings.visualEnabled !== false}
+                        onChange={(e) => handleFieldChange('notificationSettings', 'visualEnabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Visual Alerts Enabled"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings.vibrationEnabled !== false}
+                        onChange={(e) => handleFieldChange('notificationSettings', 'vibrationEnabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Vibration Enabled"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings.audioEnabled !== false}
+                        onChange={(e) => handleFieldChange('notificationSettings', 'audioEnabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Audio Enabled"
+                  />
+                </Grid>
+
+                <Grid item xs={12}>
+                  <Divider sx={{ my: 1 }} />
+                  <Typography variant="body2" gutterBottom>
+                    Quiet Hours
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings?.quietHours?.enabled === true}
+                        onChange={(e) => updateNestedConfig('quietHours', 'enabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Enable Quiet Hours"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    label="Quiet Start (HH:MM)"
+                    value={fieldConfigs.notificationSettings?.quietHours?.start || ''}
+                    onChange={(e) => updateNestedConfig('quietHours', 'start', e.target.value)}
+                    size="small"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    label="Quiet End (HH:MM)"
+                    value={fieldConfigs.notificationSettings?.quietHours?.end || ''}
+                    onChange={(e) => updateNestedConfig('quietHours', 'end', e.target.value)}
+                    size="small"
+                  />
+                </Grid>
+
+                <Grid item xs={12}>
+                  <Divider sx={{ my: 1 }} />
+                  <Typography variant="body2" gutterBottom>
+                    Shift Rules
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.notificationSettings?.shiftRules?.enabled === true}
+                        onChange={(e) => updateNestedConfig('shiftRules', 'enabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Enable Shift Rules"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    label="Shift Start (HH:MM)"
+                    value={fieldConfigs.notificationSettings?.shiftRules?.start || ''}
+                    onChange={(e) => updateNestedConfig('shiftRules', 'start', e.target.value)}
+                    size="small"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    label="Shift End (HH:MM)"
+                    value={fieldConfigs.notificationSettings?.shiftRules?.end || ''}
+                    onChange={(e) => updateNestedConfig('shiftRules', 'end', e.target.value)}
+                    size="small"
+                  />
+                </Grid>
+              </Grid>
+            </Paper>
+          </Grid>
+        )}
+
+        {fieldConfigs.gpsSafetyAlerts && (
+          <Grid item xs={12}>
+            <Paper sx={{ p: 2, bgcolor: '#1E1E1E' }}>
+              <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                GPS Safety Alerts
+              </Typography>
+              <Typography variant="caption" color="textSecondary" display="block" sx={{ mb: 2 }}>
+                Configure critical GPS accuracy/signal-loss safety behavior and whether authority boundary alerts pause when location quality is low.
+              </Typography>
+
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.gpsSafetyAlerts.enabled !== false}
+                        onChange={(e) => updateGpsSafetyNested('enabled', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="GPS Safety Alerts Enabled"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Accuracy Threshold (m)"
+                    value={fieldConfigs.gpsSafetyAlerts.accuracyThresholdMeters ?? 25}
+                    onChange={(e) => updateGpsSafetyNested('accuracyThresholdMeters', Number(e.target.value))}
+                    size="small"
+                    inputProps={{ min: 5, max: 500 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Critical Accuracy Threshold (m)"
+                    value={fieldConfigs.gpsSafetyAlerts.criticalAccuracyThresholdMeters ?? 50}
+                    onChange={(e) => updateGpsSafetyNested('criticalAccuracyThresholdMeters', Number(e.target.value))}
+                    size="small"
+                    inputProps={{ min: 5, max: 1000 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Stale Signal After (sec)"
+                    value={fieldConfigs.gpsSafetyAlerts.staleAfterSeconds ?? 20}
+                    onChange={(e) => updateGpsSafetyNested('staleAfterSeconds', Number(e.target.value))}
+                    size="small"
+                    inputProps={{ min: 5, max: 600 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField
+                    fullWidth
+                    type="number"
+                    label="Repeat Frequency (sec)"
+                    value={fieldConfigs.gpsSafetyAlerts.repeatFrequencySeconds ?? 30}
+                    onChange={(e) => updateGpsSafetyNested('repeatFrequencySeconds', Number(e.target.value))}
+                    size="small"
+                    inputProps={{ min: 5, max: 600 }}
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.gpsSafetyAlerts.pauseAuthorityAlertsOnLowAccuracy !== false}
+                        onChange={(e) => updateGpsSafetyNested('pauseAuthorityAlertsOnLowAccuracy', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Pause Authority Alerts on Low Accuracy"
+                  />
+                </Grid>
+
+                <Grid item xs={12}>
+                  <Divider sx={{ my: 1 }} />
+                  <Typography variant="body2" gutterBottom>
+                    Alert Types
+                  </Typography>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.gpsSafetyAlerts?.alertTypes?.accuracy !== false}
+                        onChange={(e) => updateGpsSafetyAlertType('accuracy', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Accuracy Threshold Alerts"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.gpsSafetyAlerts?.alertTypes?.satelliteLoss !== false}
+                        onChange={(e) => updateGpsSafetyAlertType('satelliteLoss', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Satellite Loss Alerts"
+                  />
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <FormControlLabel
+                    control={(
+                      <Switch
+                        checked={fieldConfigs.gpsSafetyAlerts?.alertTypes?.staleSignal !== false}
+                        onChange={(e) => updateGpsSafetyAlertType('staleSignal', e.target.checked)}
+                        color="primary"
+                      />
+                    )}
+                    label="Stale Signal Alerts"
+                  />
+                </Grid>
+              </Grid>
+            </Paper>
+          </Grid>
+        )}
       </Grid>
 
       <Divider sx={{ my: 4 }} />
