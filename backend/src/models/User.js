@@ -169,7 +169,9 @@ class User extends BaseModel {
       'Employee_Contact',
       'Email',
       'Role',
-      'Is_Active'
+      'Is_Active',
+      'Agency_ID',
+      'Password_Hash'
     ];
 
     const updates = [];

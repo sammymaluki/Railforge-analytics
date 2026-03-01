@@ -7,7 +7,7 @@ export const createAuthority = createAsyncThunk(
   async (authorityData, { rejectWithValue, getState }) => {
     try {
       const { auth } = getState();
-      
+
       // Add user info if not provided
       const completeAuthorityData = {
         ...authorityData,
@@ -17,23 +17,23 @@ export const createAuthority = createAsyncThunk(
       };
 
       const response = await apiService.createAuthority(completeAuthorityData);
-      
+
       if (response.success) {
         // Save to local database
         const localId = await databaseService.saveAuthority({
-          ...response.data.authority || response.data,
-          User_ID: auth.user?.User_ID
+          ...(response.data.authority || response.data),
+          User_ID: auth.user?.User_ID,
         });
-        
+
         return {
           ...response.data,
           localId,
           hasOverlap: response.data.hasOverlap || false,
-          overlapDetails: response.data.overlapDetails || []
+          overlapDetails: response.data.overlapDetails || [],
         };
-      } else {
-        return rejectWithValue(response.error);
       }
+
+      return rejectWithValue(response.error);
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -44,23 +44,39 @@ export const endAuthority = createAsyncThunk(
   'authority/end',
   async ({ authorityId, confirmEndTracking = true }, { rejectWithValue }) => {
     try {
+      console.log('Redux: Attempting to end authority', { authorityId, confirmEndTracking });
       const response = await apiService.endAuthority(authorityId, confirmEndTracking);
-      
+      console.log('Redux: End authority API response:', response);
+
       if (response.success) {
-        // Update local database
+        // Update local cache
         await databaseService.endAuthority(authorityId, confirmEndTracking);
-        
         return response.data;
-      } else {
-        return rejectWithValue(response.error);
       }
+
+      return rejectWithValue(response.error);
     } catch (error) {
+      console.error('Redux: Error in endAuthority:', error);
+
+      const notFoundOnServer =
+        Number(error?.status) === 404 ||
+        String(error?.message || '').toLowerCase().includes('authority not found');
+
+      if (notFoundOnServer) {
+        // Server already has no such active authority; clear local state anyway.
+        await databaseService.endAuthority(authorityId, confirmEndTracking);
+        return { authorityId, endedLocally: true, notFoundOnServer: true };
+      }
+
       // If offline, still update local database
       if (error.status === 0) {
         await databaseService.endAuthority(authorityId, confirmEndTracking);
         return { authorityId, endedLocally: true };
       }
-      return rejectWithValue(error.message);
+
+      return rejectWithValue({
+        message: error.message || 'Failed to clear authority',
+      });
     }
   }
 );
@@ -69,25 +85,20 @@ export const getActiveAuthority = createAsyncThunk(
   'authority/getActive',
   async (_, { rejectWithValue }) => {
     try {
-      // First check local database
-      const localAuthority = await databaseService.getActiveAuthority();
-      
-      if (localAuthority) {
-        return localAuthority;
-      }
-      
-      // If not found locally, check API
+      // Prefer server data first to avoid stale local authority IDs.
       const response = await apiService.getUserAuthorities(true);
-      
+
       if (response.success && response.data.authorities.length > 0) {
         const activeAuthority = response.data.authorities[0];
-        
+
         // Save to local database
         await databaseService.saveAuthority(activeAuthority);
-        
+
         return activeAuthority;
       }
-      
+
+      // No active authority on server: clear local cache.
+      await databaseService.endAuthority('stale-authority', true);
       return null;
     } catch (error) {
       // If offline, return local authority
@@ -110,12 +121,12 @@ export const checkProximity = createAsyncThunk(
         longitude,
         maxDistance
       );
-      
+
       if (response.success) {
         return response.data;
-      } else {
-        return rejectWithValue(response.error);
       }
+
+      return rejectWithValue(response.error);
     } catch (error) {
       return rejectWithValue(error.message);
     }
@@ -180,13 +191,13 @@ const authoritySlice = createSlice({
         state.isCreating = false;
         state.error = action.payload;
       })
-      
+
       // End authority
       .addCase(endAuthority.pending, (state) => {
         state.isEnding = true;
         state.error = null;
       })
-      .addCase(endAuthority.fulfilled, (state, action) => {
+      .addCase(endAuthority.fulfilled, (state) => {
         state.isEnding = false;
         state.currentAuthority = null;
         state.overlapDetected = false;
@@ -198,7 +209,7 @@ const authoritySlice = createSlice({
         state.isEnding = false;
         state.error = action.payload;
       })
-      
+
       // Get active authority
       .addCase(getActiveAuthority.pending, (state) => {
         state.isLoading = true;
@@ -213,7 +224,7 @@ const authoritySlice = createSlice({
         state.isLoading = false;
         state.error = action.payload;
       })
-      
+
       // Check proximity
       .addCase(checkProximity.pending, (state) => {
         state.isLoading = true;

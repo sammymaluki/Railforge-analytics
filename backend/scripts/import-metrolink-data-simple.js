@@ -44,6 +44,11 @@ const envTargetAgencyCode = process.env.METROLINK_TARGET_AGENCY_CODE || null;
 const targetAgencyId = Number(cliTargetAgencyId || envTargetAgencyId || 0) || null;
 const targetAgencyCode = (cliTargetAgencyCode || envTargetAgencyCode || '').trim() || null;
 
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
+
 const dbConfig = {
   server: process.env.DB_HOST || 'localhost',
   database: process.env.DB_NAME || 'HerzogRailAuthority',
@@ -51,8 +56,8 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || '',
   port: parseInt(process.env.DB_PORT || '1434', 10),
   options: {
-    encrypt: false,
-    trustServerCertificate: true,
+    encrypt: parseBoolean(process.env.DB_ENCRYPT, true),
+    trustServerCertificate: parseBoolean(process.env.DB_TRUST_SERVER_CERT, true),
     enableArithAbort: true,
     connectTimeout: 60000,
     requestTimeout: 60000,

@@ -1,15 +1,20 @@
 require('dotenv').config();
 const sql = require('mssql');
 
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
+
 const config = {
-  server: 'localhost',
-  port: 1434,
-  user: 'sa',
-  password: 'Herzog2025!',
-  database: 'HerzogRailAuthority',
+  server: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
+  user: process.env.DB_USER || 'sa',
+  password: process.env.DB_PASSWORD || 'Herzog2025!',
+  database: process.env.DB_NAME || 'HerzogRailAuthority',
   options: {
-    encrypt: false,
-    trustServerCertificate: true,
+    encrypt: parseBoolean(process.env.DB_ENCRYPT, true),
+    trustServerCertificate: parseBoolean(process.env.DB_TRUST_SERVER_CERT, true),
     connectTimeout: 15000
   }
 };

@@ -99,18 +99,36 @@ const MainLayout = () => {
 
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Toolbar sx={{ bgcolor: '#000', borderBottom: '2px solid #FFD100' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Toolbar sx={{ bgcolor: '#000', borderBottom: '2px solid #FFD100', minHeight: 70 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
           <img 
             src="/RF-Logo.png" 
             alt="RailForge Analytics" 
-            style={{ height: 40, width: 'auto' }}
+            style={{ height: 45, width: 'auto', flexShrink: 0 }}
           />
-          <Box>
-            <Typography variant="h6" noWrap component="div" fontWeight="bold">
+          <Box sx={{ flexGrow: 1, overflow: 'hidden' }}>
+            <Typography 
+              variant="h6" 
+              component="div" 
+              fontWeight="bold"
+              sx={{ 
+                fontSize: '1.05rem',
+                lineHeight: 1.2,
+                whiteSpace: 'normal',
+                wordBreak: 'break-word'
+              }}
+            >
               RailForge Analytics
             </Typography>
-            <Typography variant="caption" sx={{ fontSize: '0.7rem', color: '#FFD100' }}>
+            <Typography 
+              variant="caption" 
+              sx={{ 
+                fontSize: '0.65rem', 
+                color: '#FFD100',
+                display: 'block',
+                lineHeight: 1.3
+              }}
+            >
               Forging data into safer rail operations
             </Typography>
           </Box>

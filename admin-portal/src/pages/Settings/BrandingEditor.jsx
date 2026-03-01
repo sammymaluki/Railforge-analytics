@@ -264,6 +264,7 @@ const BrandingEditor = () => {
                     value={formData.theme}
                     label="Theme"
                     onChange={(e) => setFormData({ ...formData, theme: e.target.value })}
+                    sx={{ height: 56 }}
                   >
                     <MenuItem value="dark">Dark Theme</MenuItem>
                     <MenuItem value="light">Light Theme</MenuItem>
@@ -271,7 +272,7 @@ const BrandingEditor = () => {
                 </FormControl>
               </Grid>
 
-              <Grid item xs={6}>
+              <Grid item xs={12} sm={6}>
                 <TextField
                   fullWidth
                   label="Background Color"
@@ -279,10 +280,16 @@ const BrandingEditor = () => {
                   value={formData.backgroundColor}
                   onChange={(e) => setFormData({ ...formData, backgroundColor: e.target.value })}
                   InputLabelProps={{ shrink: true }}
+                  helperText="Main app background color"
+                  sx={{
+                    minWidth: 220,
+                    '& .MuiInputBase-root': { minHeight: 56 },
+                    '& input': { minHeight: 36, cursor: 'pointer' },
+                  }}
                 />
               </Grid>
 
-              <Grid item xs={6}>
+              <Grid item xs={12} sm={6}>
                 <TextField
                   fullWidth
                   label="Paper Background"
@@ -290,6 +297,12 @@ const BrandingEditor = () => {
                   value={formData.paperBackground}
                   onChange={(e) => setFormData({ ...formData, paperBackground: e.target.value })}
                   InputLabelProps={{ shrink: true }}
+                  helperText="Card/panel background color"
+                  sx={{
+                    minWidth: 220,
+                    '& .MuiInputBase-root': { minHeight: 56 },
+                    '& input': { minHeight: 36, cursor: 'pointer' },
+                  }}
                 />
               </Grid>
             </Grid>
@@ -339,6 +352,7 @@ const BrandingEditor = () => {
                 value={formData.fontFamily}
                 label="Font Family"
                 onChange={(e) => setFormData({ ...formData, fontFamily: e.target.value })}
+                sx={{ height: 56 }}
               >
                 <MenuItem value="Roboto">Roboto</MenuItem>
                 <MenuItem value="Arial">Arial</MenuItem>

@@ -46,6 +46,20 @@ class AlertConfiguration extends BaseModel {
     return result.recordset;
   }
 
+  async getByType(agencyId, configType) {
+    const query = `
+      SELECT *
+      FROM Alert_Configurations
+      WHERE Agency_ID = @agencyId
+        AND Config_Type = @configType
+        AND Is_Active = 1
+      ORDER BY Distance_Miles DESC, Time_Minutes DESC
+    `;
+
+    const result = await this.executeQuery(query, { agencyId, configType });
+    return result.recordset;
+  }
+
   async updateConfiguration(configId, updateData) {
     const allowedFields = [
       'Distance_Miles',
@@ -86,6 +100,11 @@ class AlertConfiguration extends BaseModel {
     return result.recordset[0];
   }
 
+  // Backward-compatible alias used by controllers.
+  async update(configId, updateData) {
+    return this.updateConfiguration(configId, updateData);
+  }
+
   async createConfiguration(configData) {
     const {
       agencyId,
@@ -124,6 +143,11 @@ class AlertConfiguration extends BaseModel {
     });
 
     return result.recordset[0];
+  }
+
+  // Backward-compatible alias used by controllers.
+  async create(configData) {
+    return this.createConfiguration(configData);
   }
 
   async getAlertForDistance(agencyId, configType, distance) {

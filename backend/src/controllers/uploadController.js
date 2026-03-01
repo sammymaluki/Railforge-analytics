@@ -3,6 +3,7 @@ const { logger } = require('../config/logger');
 const { getConnection, sql } = require('../config/database');
 const dataValidationService = require('../services/dataValidationService');
 const XLSX = require('xlsx');
+const { isGlobalAdmin } = require('../utils/rbac');
 
 class UploadController {
   constructor() {
@@ -16,6 +17,168 @@ class UploadController {
     this.downloadUsersTemplate = this.downloadUsersTemplate.bind(this);
     this.processTrackData = this.processTrackData.bind(this);
     this.processMilepostData = this.processMilepostData.bind(this);
+  }
+
+  normalizeSubdivisionKey(value) {
+    return String(value || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[\s_]+/g, '');
+  }
+
+  parseBoolean(value, defaultValue = false) {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+  }
+
+  toNullableString(value) {
+    if (value === undefined || value === null) return null;
+    const normalized = String(value).replace(/\u00A0/g, ' ').trim();
+    return normalized.length ? normalized : null;
+  }
+
+  normalizeTrackType(value) {
+    const raw = this.toNullableString(value);
+    if (!raw) return 'Other';
+
+    const key = raw.toUpperCase().replace(/\s+/g, '');
+    const map = {
+      M: 'Main',
+      MAIN: 'Main',
+      YD: 'Yard',
+      YARD: 'Yard',
+      SIDING: 'Siding',
+      STORAGE: 'Storage',
+      XOVER: 'X_Over',
+      X_OVER: 'X_Over',
+      'X-OVER': 'X_Over',
+      OTHER: 'Other',
+    };
+
+    return map[key] || 'Other';
+  }
+
+  normalizeAssetType(value) {
+    const raw = this.toNullableString(value);
+    if (!raw) return 'Other';
+    const key = raw.toUpperCase();
+    if (['SWITCH', 'SIGNAL', 'CROSSING', 'OTHER'].includes(key)) {
+      return key.charAt(0) + key.slice(1).toLowerCase();
+    }
+    return 'Other';
+  }
+
+  normalizeAssetStatus(value) {
+    const raw = this.toNullableString(value);
+    if (!raw) return 'ACTIVE';
+    const key = raw.toUpperCase();
+    if (['ACTIVE', 'INACTIVE', 'PLANNED', 'REMOVED'].includes(key)) {
+      return key;
+    }
+    return 'ACTIVE';
+  }
+
+  async resolveSubdivisionId(pool, agencyId, subdivisionRaw) {
+    const rawValue = String(subdivisionRaw || '').trim();
+    if (!rawValue) return null;
+
+    const normalizedValue = this.normalizeSubdivisionKey(rawValue);
+
+    const result = await pool.request()
+      .input('agencyId', sql.Int, Number(agencyId))
+      .input('rawSubdivision', sql.NVarChar, rawValue)
+      .input('normalizedSubdivision', sql.NVarChar, normalizedValue)
+      .query(`
+        SELECT TOP 1 Subdivision_ID
+        FROM Subdivisions
+        WHERE Agency_ID = @agencyId
+          AND (
+            UPPER(LTRIM(RTRIM(Subdivision_Code))) = UPPER(@rawSubdivision)
+            OR UPPER(LTRIM(RTRIM(Subdivision_Name))) = UPPER(@rawSubdivision)
+            OR REPLACE(REPLACE(UPPER(LTRIM(RTRIM(Subdivision_Code))), '_', ''), ' ', '') = @normalizedSubdivision
+            OR REPLACE(REPLACE(UPPER(LTRIM(RTRIM(Subdivision_Name))), '_', ''), ' ', '') = @normalizedSubdivision
+          )
+        ORDER BY Subdivision_ID
+      `);
+
+    return result.recordset[0]?.Subdivision_ID || null;
+  }
+
+  async createSubdivision(pool, agencyId, subdivisionRaw) {
+    const subdivisionName = String(subdivisionRaw || '').trim();
+    if (!subdivisionName) return null;
+
+    // Generate a deterministic code from the incoming value, max 20 chars.
+    const normalized = this.normalizeSubdivisionKey(subdivisionName);
+    let code = normalized.slice(0, 20) || 'SUBDIV';
+
+    // Ensure uniqueness of code per agency.
+    const existingCode = await pool.request()
+      .input('agencyId', sql.Int, Number(agencyId))
+      .input('code', sql.VarChar(20), code)
+      .query(`
+        SELECT TOP 1 Subdivision_ID
+        FROM Subdivisions
+        WHERE Agency_ID = @agencyId
+          AND Subdivision_Code = @code
+      `);
+
+    if (existingCode.recordset.length > 0) {
+      const suffix = String(Math.abs(this.normalizeSubdivisionKey(subdivisionName).split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % 10000).padStart(4, '0');
+      code = `${code.slice(0, 15)}${suffix}`;
+    }
+
+    const insertResult = await pool.request()
+      .input('agencyId', sql.Int, Number(agencyId))
+      .input('code', sql.VarChar(20), code)
+      .input('name', sql.NVarChar(100), subdivisionName)
+      .query(`
+        INSERT INTO Subdivisions (Agency_ID, Subdivision_Code, Subdivision_Name, Is_Active)
+        OUTPUT INSERTED.Subdivision_ID
+        VALUES (@agencyId, @code, @name, 1)
+      `);
+
+    return insertResult.recordset[0]?.Subdivision_ID || null;
+  }
+
+  async resolveAgencyIdByCode(pool, agencyCodeRaw) {
+    const agencyCode = this.toNullableString(agencyCodeRaw);
+    if (!agencyCode) return null;
+
+    const result = await pool.request()
+      .input('agencyCode', sql.VarChar(20), agencyCode.toUpperCase())
+      .query(`
+        SELECT TOP 1 Agency_ID
+        FROM Agencies
+        WHERE UPPER(Agency_CD) = @agencyCode
+      `);
+
+    return result.recordset[0]?.Agency_ID || null;
+  }
+
+  async createAgencyByCode(pool, agencyCodeRaw) {
+    const agencyCode = this.toNullableString(agencyCodeRaw);
+    if (!agencyCode) return null;
+
+    const normalizedCode = agencyCode.toUpperCase().slice(0, 20);
+    const agencyName = `${normalizedCode} Agency`;
+
+    const result = await pool.request()
+      .input('agencyCode', sql.VarChar(20), normalizedCode)
+      .input('agencyName', sql.NVarChar(100), agencyName)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM Agencies WHERE UPPER(Agency_CD) = UPPER(@agencyCode))
+        BEGIN
+          INSERT INTO Agencies (Agency_CD, Agency_Name, Is_Active)
+          VALUES (@agencyCode, @agencyName, 1)
+        END
+
+        SELECT TOP 1 Agency_ID
+        FROM Agencies
+        WHERE UPPER(Agency_CD) = UPPER(@agencyCode)
+      `);
+
+    return result.recordset[0]?.Agency_ID || null;
   }
 
   async uploadPinPhoto(req, res) {
@@ -154,6 +317,9 @@ class UploadController {
 
       const user = req.user;
       const { agencyId, dataType } = req.body;
+      const createMissingSubdivisions = this.parseBoolean(req.body.createMissingSubdivisions, false);
+      const useAgencyCodeFromFile = this.parseBoolean(req.body.useAgencyCodeFromFile, false);
+      const createMissingAgencies = this.parseBoolean(req.body.createMissingAgencies, false);
 
       if (!agencyId) {
         return res.status(400).json({
@@ -167,6 +333,13 @@ class UploadController {
         return res.status(403).json({
           success: false,
           error: 'Only administrators can upload track data'
+        });
+      }
+
+      if ((useAgencyCodeFromFile || createMissingAgencies) && !isGlobalAdmin(user)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Only global administrators can import using Agency_CD from file or create missing agencies'
         });
       }
 
@@ -186,10 +359,18 @@ class UploadController {
       let result;
       switch (dataType) {
       case 'tracks':
-        result = await this.processTrackData(req.file.buffer, agencyId);
+        result = await this.processTrackData(req.file.buffer, agencyId, {
+          createMissingSubdivisions,
+          useAgencyCodeFromFile,
+          createMissingAgencies,
+        });
         break;
       case 'mileposts':
-        result = await this.processMilepostData(req.file.buffer, agencyId);
+        result = await this.processMilepostData(req.file.buffer, agencyId, {
+          createMissingSubdivisions,
+          useAgencyCodeFromFile,
+          createMissingAgencies,
+        });
         break;
       default:
         throw new Error(`Unknown data type: ${dataType}`);
@@ -223,8 +404,11 @@ class UploadController {
     }
   }
 
-  async processTrackData(fileBuffer, agencyId) {
+  async processTrackData(fileBuffer, agencyId, options = {}) {
     const pool = getConnection();
+    const createMissingSubdivisions = Boolean(options.createMissingSubdivisions);
+    const useAgencyCodeFromFile = Boolean(options.useAgencyCodeFromFile);
+    const createMissingAgencies = Boolean(options.createMissingAgencies);
     
     try {
       // Read Excel file from buffer
@@ -242,29 +426,38 @@ class UploadController {
           // Validate required fields based on provided Excel structure
           if (!row.Sub_Div || !row.Track_Type) {
             errors.push(`Missing required fields in row: ${JSON.stringify(row)}`);
-            continue;
-          }
-          
-          // Get subdivision ID
-          const subdivQuery = `
-            SELECT Subdivision_ID 
-            FROM Subdivisions 
-            WHERE Subdivision_Code = @subdivisionCode 
-              AND Agency_ID = @agencyId
-          `;
-          
-          const subdivResult = await pool.request()
-            .input('subdivisionCode', sql.NVarChar, row.Sub_Div)
-            .input('agencyId', sql.Int, agencyId)
-            .query(subdivQuery);
-          
-          if (subdivResult.recordset.length === 0) {
-            errors.push(`Subdivision not found: ${row.Sub_Div}`);
             skipped++;
             continue;
           }
-          
-          const subdivisionId = subdivResult.recordset[0].Subdivision_ID;
+
+          const subdivisionLabel = String(row.Sub_Div).trim();
+          let targetAgencyId = Number(agencyId);
+          if (useAgencyCodeFromFile) {
+            const agencyCodeFromRow = row.Agency_CD || row.Agency_Code || row.AgencyCode || row.Agency;
+            if (agencyCodeFromRow) {
+              targetAgencyId = await this.resolveAgencyIdByCode(pool, agencyCodeFromRow);
+              if (!targetAgencyId && createMissingAgencies) {
+                targetAgencyId = await this.createAgencyByCode(pool, agencyCodeFromRow);
+              }
+              if (!targetAgencyId) {
+                errors.push(`Agency not found for Agency_CD: ${agencyCodeFromRow}`);
+                skipped++;
+                continue;
+              }
+            }
+          }
+
+          let subdivisionId = await this.resolveSubdivisionId(pool, targetAgencyId, subdivisionLabel);
+
+          if (!subdivisionId && createMissingSubdivisions) {
+            subdivisionId = await this.createSubdivision(pool, targetAgencyId, subdivisionLabel);
+          }
+
+          if (!subdivisionId) {
+            errors.push(`Subdivision not found: ${subdivisionLabel}`);
+            skipped++;
+            continue;
+          }
           
           // Insert track data
           const insertQuery = `
@@ -286,27 +479,27 @@ class UploadController {
           
           await pool.request()
             .input('subdivisionId', sql.Int, subdivisionId)
-            .input('ls', sql.NVarChar, row.LS || null)
-            .input('trackType', sql.NVarChar, row.Track_Type)
-            .input('trackNumber', sql.NVarChar, row.Track_Number || null)
-            .input('divergingTrackType', sql.NVarChar, row.Diverging_Track_Type || null)
-            .input('divergingTrackNumber', sql.NVarChar, row.Diverging_Track_Number || null)
-            .input('facingDirection', sql.NVarChar, row.Facing_Direction || null)
-            .input('mpSuffix', sql.NVarChar, row.MP_Suffix || null)
+            .input('ls', sql.NVarChar, this.toNullableString(row.LS))
+            .input('trackType', sql.NVarChar, this.normalizeTrackType(row.Track_Type))
+            .input('trackNumber', sql.NVarChar, this.toNullableString(row.Track_Number))
+            .input('divergingTrackType', sql.NVarChar, this.normalizeTrackType(row.Diverging_Track_Type))
+            .input('divergingTrackNumber', sql.NVarChar, this.toNullableString(row.Diverging_Track_Number))
+            .input('facingDirection', sql.NVarChar, this.toNullableString(row.Facing_Direction))
+            .input('mpSuffix', sql.NVarChar, this.toNullableString(row.MP_Suffix))
             .input('bmp', sql.Decimal(10,4), row.BMP || 0)
             .input('emp', sql.Decimal(10,4), row.EMP || 0)
-            .input('assetName', sql.NVarChar, row.Asset_Name || null)
-            .input('assetType', sql.NVarChar, row.Asset_Type || null)
-            .input('assetSubType', sql.NVarChar, row.Asset_SubType || null)
-            .input('assetId', sql.NVarChar, row.Asset_ID || null)
-            .input('dotNumber', sql.NVarChar, row.DOT_Number || null)
-            .input('legacyAssetNumber', sql.NVarChar, row.Legacy_Asset_Number || null)
-            .input('assetDesc', sql.NVarChar, row.Asset_Desc || null)
-            .input('assetStatus', sql.NVarChar, row.Asset_Status || 'ACTIVE')
+            .input('assetName', sql.NVarChar, this.toNullableString(row.Asset_Name))
+            .input('assetType', sql.NVarChar, this.normalizeAssetType(row.Asset_Type))
+            .input('assetSubType', sql.NVarChar, this.toNullableString(row.Asset_SubType))
+            .input('assetId', sql.NVarChar, this.toNullableString(row.Asset_ID))
+            .input('dotNumber', sql.NVarChar, this.toNullableString(row.DOT_Number))
+            .input('legacyAssetNumber', sql.NVarChar, this.toNullableString(row.Legacy_Asset_Number))
+            .input('assetDesc', sql.NVarChar, this.toNullableString(row.Asset_Desc))
+            .input('assetStatus', sql.NVarChar, this.normalizeAssetStatus(row.Asset_Status))
             .input('latitude', sql.Decimal(10,8), row.Latitude || null)
             .input('longitude', sql.Decimal(11,8), row.Longitude || null)
-            .input('department', sql.NVarChar, row.Department || null)
-            .input('notes', sql.NVarChar, row.Notes || null)
+            .input('department', sql.NVarChar, this.toNullableString(row.Department))
+            .input('notes', sql.NVarChar, this.toNullableString(row.Notes))
             .query(insertQuery);
           
           imported++;
@@ -331,8 +524,11 @@ class UploadController {
     }
   }
 
-  async processMilepostData(fileBuffer, agencyId) {
+  async processMilepostData(fileBuffer, agencyId, options = {}) {
     const pool = getConnection();
+    const createMissingSubdivisions = Boolean(options.createMissingSubdivisions);
+    const useAgencyCodeFromFile = Boolean(options.useAgencyCodeFromFile);
+    const createMissingAgencies = Boolean(options.createMissingAgencies);
 
     try {
       const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
@@ -351,7 +547,7 @@ class UploadController {
           const milepost = row.MP ?? row.Milepost ?? row.MILEPOST;
           const latitude = row.Latitude ?? row.LATITUDE;
           const longitude = row.Longitude ?? row.LONGITUDE;
-          const trackType = row.Track_Type || row.TRACK_TYPE || null;
+          const trackType = this.normalizeTrackType(row.Track_Type || row.TRACK_TYPE || null);
           const trackNumber = row.Track_Number || row.TRACK_NUMBER || null;
           const elevation = row.Elevation ?? row.ELEVATION ?? null;
 
@@ -361,27 +557,31 @@ class UploadController {
             continue;
           }
 
-          const subdivisionResult = await pool.request()
-            .input('agencyId', sql.Int, agencyId)
-            .input('subdivisionCode', sql.NVarChar, String(subdivisionCode).trim())
-            .query(`
-              SELECT TOP 1 Subdivision_ID
-              FROM Subdivisions
-              WHERE Agency_ID = @agencyId
-                AND (
-                  UPPER(Subdivision_Code) = UPPER(@subdivisionCode)
-                  OR UPPER(Subdivision_Name) = UPPER(@subdivisionCode)
-                  OR UPPER(Subdivision_Name) = UPPER(@subdivisionCode + ' Subdivision')
-                )
-            `);
+          let targetAgencyId = Number(agencyId);
+          if (useAgencyCodeFromFile) {
+            const agencyCodeFromRow = row.Agency_CD || row.Agency_Code || row.AgencyCode || row.Agency;
+            if (agencyCodeFromRow) {
+              targetAgencyId = await this.resolveAgencyIdByCode(pool, agencyCodeFromRow);
+              if (!targetAgencyId && createMissingAgencies) {
+                targetAgencyId = await this.createAgencyByCode(pool, agencyCodeFromRow);
+              }
+              if (!targetAgencyId) {
+                skipped += 1;
+                errors.push(`Agency not found for Agency_CD: ${agencyCodeFromRow}`);
+                continue;
+              }
+            }
+          }
 
-          if (!subdivisionResult.recordset.length) {
+          let subdivisionId = await this.resolveSubdivisionId(pool, targetAgencyId, subdivisionCode);
+          if (!subdivisionId && createMissingSubdivisions) {
+            subdivisionId = await this.createSubdivision(pool, targetAgencyId, subdivisionCode);
+          }
+          if (!subdivisionId) {
             skipped += 1;
             errors.push(`Subdivision not found: ${subdivisionCode}`);
             continue;
           }
-
-          const subdivisionId = subdivisionResult.recordset[0].Subdivision_ID;
 
           await pool.request()
             .input('subdivisionId', sql.Int, subdivisionId)

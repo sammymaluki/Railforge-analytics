@@ -36,11 +36,19 @@ import {
 } from '@mui/icons-material';
 import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { isGlobalAdmin } from '../../utils/rbac';
 
 const AlertDistanceConfig = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use the logged-in user's agency ID
-  const agencyId = user?.Agency_ID || user?.agencyId;
+  const globalAdmin = isGlobalAdmin(user);
+  
+  // For Global Admins, allow selecting agency; for others, use their own agency
+  const defaultAgencyId = user?.Agency_ID || user?.agencyId;
+  const [selectedAgencyId, setSelectedAgencyId] = useState(defaultAgencyId);
+  const [agencies, setAgencies] = useState([]);
+  
+  // The agency ID to use for API calls
+  const agencyId = globalAdmin ? selectedAgencyId : defaultAgencyId;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -52,17 +60,39 @@ const AlertDistanceConfig = () => {
 
   const [formData, setFormData] = useState({
     configType: 'Proximity_Alert',
-    alertLevel: 'warning',
+    alertLevel: 'Warning',
     distanceMiles: 0.25,
     timeMinutes: null,
+    speedMph: null,
     isEnabled: true,
     description: ''
   });
 
+  // Load agencies for Global Admins
   useEffect(() => {
-    loadConfigurations();
+    if (globalAdmin) {
+      loadAgencies();
+    }
+  }, [globalAdmin]);
+
+  // Reload configurations when agency changes
+  useEffect(() => {
+    if (agencyId) {
+      loadConfigurations();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agencyId]);
+
+  const loadAgencies = async () => {
+    try {
+      const response = await api.get('/agencies');
+      if (response.data.success) {
+        setAgencies(response.data.data.agencies || []);
+      }
+    } catch (err) {
+      console.error('Failed to load agencies:', err);
+    }
+  };
 
   const loadConfigurations = async () => {
     setLoading(true);
@@ -88,6 +118,7 @@ const AlertDistanceConfig = () => {
         alertLevel: config.Alert_Level,
         distanceMiles: config.Distance_Miles,
         timeMinutes: config.Time_Minutes,
+        speedMph: config.Speed_MPH,
         isEnabled: config.Is_Enabled,
         description: config.Description || ''
       });
@@ -95,9 +126,10 @@ const AlertDistanceConfig = () => {
       setEditingConfig(null);
       setFormData({
         configType: 'Proximity_Alert',
-        alertLevel: 'warning',
+        alertLevel: 'Warning',
         distanceMiles: 0.25,
         timeMinutes: null,
+        speedMph: null,
         isEnabled: true,
         description: ''
       });
@@ -116,14 +148,40 @@ const AlertDistanceConfig = () => {
     setSuccess(null);
 
     try {
+      const normalizedAlertLevel = (() => {
+        const raw = String(formData.alertLevel || '').toLowerCase();
+        if (raw === 'critical') return 'Critical';
+        if (raw === 'warning') return 'Warning';
+        return 'Informational';
+      })();
+
+      const payload = {
+        ...formData,
+        alertLevel: normalizedAlertLevel,
+        message: formData.description || '',
+      };
+
+      if (!editingConfig) {
+        const duplicate = configurations.find((cfg) =>
+          String(cfg.Config_Type || '').toLowerCase() === String(payload.configType || '').toLowerCase() &&
+          String(cfg.Alert_Level || '').toLowerCase() === String(payload.alertLevel || '').toLowerCase()
+        );
+
+        if (duplicate) {
+          setError('A configuration with this type and alert level already exists for the selected agency. Edit the existing row instead of creating a duplicate.');
+          setSaving(false);
+          return;
+        }
+      }
+
       let response;
       if (editingConfig) {
         response = await api.put(
           `/config/agencies/${agencyId}/alert-configs/${editingConfig.Config_ID}`,
-          formData
+          payload
         );
       } else {
-        response = await api.post(`/config/agencies/${agencyId}/alert-configs`, formData);
+        response = await api.post(`/config/agencies/${agencyId}/alert-configs`, payload);
       }
 
       if (response.data.success) {
@@ -137,7 +195,14 @@ const AlertDistanceConfig = () => {
         setTimeout(() => setSuccess(null), 5000);
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to save configuration');
+      if (err.response?.status === 409) {
+        setError(
+          err.response?.data?.message ||
+            'Duplicate configuration detected. Edit the existing row instead of creating a duplicate.'
+        );
+      } else {
+        setError(err.response?.data?.message || 'Failed to save configuration');
+      }
     } finally {
       setSaving(false);
     }
@@ -161,12 +226,11 @@ const AlertDistanceConfig = () => {
   };
 
   const getAlertLevelColor = (level) => {
-    const colors = {
-      'critical': 'error',
-      'warning': 'warning',
-      'informational': 'info'
-    };
-    return colors[level] || 'default';
+    const normalized = String(level || '').toLowerCase();
+    if (normalized === 'critical') return 'error';
+    if (normalized === 'warning') return 'warning';
+    if (normalized === 'info' || normalized === 'informational') return 'info';
+    return 'default';
   };
 
   if (loading) {
@@ -204,6 +268,41 @@ const AlertDistanceConfig = () => {
           </Button>
         </Box>
       </Box>
+
+      {/* Agency Selector - Only for Global Admins */}
+      {globalAdmin && agencies.length > 0 && (
+        <Paper sx={{ p: 2, mb: 3, bgcolor: '#1E1E1E', borderLeft: '4px solid #FFD100' }}>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth>
+                <InputLabel>Select Agency to Configure</InputLabel>
+                <Select
+                  value={selectedAgencyId || ''}
+                  label="Select Agency to Configure"
+                  onChange={(e) => setSelectedAgencyId(e.target.value)}
+                  sx={{ height: 56, bgcolor: '#121212' }}
+                >
+                  {agencies.map((agency) => (
+                    <MenuItem 
+                      key={agency.Agency_ID} 
+                      value={agency.Agency_ID}
+                    >
+                      {agency.Agency_Name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Alert severity="info" icon={<InfoIcon />} sx={{ mb: 0 }}>
+                <Typography variant="caption">
+                  <strong>Global Admin Mode:</strong> You're configuring alerts for the selected agency.
+                </Typography>
+              </Alert>
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
@@ -304,34 +403,42 @@ const AlertDistanceConfig = () => {
           {editingConfig ? 'Edit Alert Configuration' : 'Add Alert Configuration'}
         </DialogTitle>
         <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
+          <Box sx={{ mt: 3, mb: 2 }}>
+            <Alert severity="info" variant="outlined" sx={{ mb: 3 }}>
+              <Typography variant="body2">
+                <strong>Standard distances:</strong> 0.25, 0.5, 0.75, 1.0 miles
+              </Typography>
+            </Alert>
+          </Box>
+          <Grid container spacing={3} sx={{ mt: 0 }}>
             <Grid item xs={12}>
               <FormControl fullWidth>
-                <InputLabel>Config Type</InputLabel>
+                <InputLabel>Alert Type *</InputLabel>
                 <Select
                   value={formData.configType}
-                  label="Config Type"
+                  label="Alert Type"
                   onChange={(e) => setFormData({ ...formData, configType: e.target.value })}
+                  sx={{ height: 56 }}
                 >
-                  <MenuItem value="Proximity_Alert">Proximity Alert</MenuItem>
-                  <MenuItem value="Boundary_Alert">Boundary Alert</MenuItem>
-                  <MenuItem value="Time_Alert">Time Alert</MenuItem>
-                  <MenuItem value="Speed_Alert">Speed Alert</MenuItem>
+                  <MenuItem value="Proximity_Alert">Proximity Alert (Distance-based)</MenuItem>
+                  <MenuItem value="Boundary_Alert">Boundary Alert (Authority limits)</MenuItem>
+                  <MenuItem value="Overlap_Alert">Overlap Alert (Authority conflict)</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
 
             <Grid item xs={12}>
               <FormControl fullWidth>
-                <InputLabel>Alert Level</InputLabel>
+                <InputLabel>Severity Level *</InputLabel>
                 <Select
                   value={formData.alertLevel}
-                  label="Alert Level"
+                  label="Severity Level"
                   onChange={(e) => setFormData({ ...formData, alertLevel: e.target.value })}
+                  sx={{ height: 56 }}
                 >
-                  <MenuItem value="informational">Informational</MenuItem>
-                  <MenuItem value="warning">Warning</MenuItem>
-                  <MenuItem value="critical">Critical</MenuItem>
+                  <MenuItem value="Informational">Informational (Low)</MenuItem>
+                  <MenuItem value="Warning">Warning (Medium)</MenuItem>
+                  <MenuItem value="Critical">Critical (High)</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
@@ -344,43 +451,51 @@ const AlertDistanceConfig = () => {
                 value={formData.distanceMiles || ''}
                 onChange={(e) => setFormData({ ...formData, distanceMiles: parseFloat(e.target.value) })}
                 inputProps={{ step: 0.25, min: 0 }}
-                helperText="Standard: 0.25, 0.5, 0.75, 1.0"
+                helperText="e.g., 0.25, 0.5, 0.75, 1.0"
+                variant="outlined"
+                size="medium"
               />
             </Grid>
 
             <Grid item xs={6}>
               <TextField
                 fullWidth
-                label="Time (Minutes)"
+                label="Duration (Minutes)"
                 type="number"
                 value={formData.timeMinutes || ''}
                 onChange={(e) => setFormData({ ...formData, timeMinutes: parseInt(e.target.value) || null })}
                 inputProps={{ min: 0 }}
-                helperText="Optional"
+                helperText="Optional - leave blank if N/A"
+                variant="outlined"
+                size="medium"
               />
             </Grid>
 
-            <Grid item xs={12}>
+
+            <Grid item xs={12} md={8}>
               <TextField
                 fullWidth
-                label="Description"
+                label="Description / Notes"
                 multiline
                 rows={3}
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                helperText="Internal notes about this configuration"
+                variant="outlined"
               />
             </Grid>
 
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Status</InputLabel>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth sx={{ minWidth: 220 }}>
+                <InputLabel>Status *</InputLabel>
                 <Select
                   value={formData.isEnabled}
                   label="Status"
                   onChange={(e) => setFormData({ ...formData, isEnabled: e.target.value })}
+                  sx={{ height: 56, minWidth: 220 }}
                 >
-                  <MenuItem value={true}>Enabled</MenuItem>
-                  <MenuItem value={false}>Disabled</MenuItem>
+                  <MenuItem value={true}>✓ Enabled</MenuItem>
+                  <MenuItem value={false}>✗ Disabled</MenuItem>
                 </Select>
               </FormControl>
             </Grid>

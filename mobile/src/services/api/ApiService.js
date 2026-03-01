@@ -352,11 +352,14 @@ class ApiService {
 
   async endAuthority(authorityId, confirmEndTracking = true) {
     try {
+      console.log(`🛑 Ending authority ${authorityId} with confirmEndTracking=${confirmEndTracking}`);
       const response = await this.api.post(`/authorities/${authorityId}/end`, {
         confirmEndTracking
       });
+      console.log(`✅ Authority ended successfully:`, response.data);
       return response.data;
     } catch (error) {
+      console.error(`❌ Error ending authority ${authorityId}:`, error.response?.data || error.message);
       throw this.handleError(error);
     }
   }

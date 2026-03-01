@@ -41,7 +41,8 @@ const MilepostDisplay = ({
     if (!Number.isFinite(accuracyValue) || accuracyValue < 0) {
       return 'No GPS';
     }
-    return `+-${accuracyValue.toFixed(0)}m`;
+    const feet = accuracyValue * 3.28084;
+    return `+-${accuracyValue.toFixed(0)}m / ${feet.toFixed(0)}ft`;
   };
 
   const milepostText = (() => {

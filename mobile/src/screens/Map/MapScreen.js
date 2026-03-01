@@ -102,6 +102,13 @@ const calculateDistanceMeters = (lat1, lng1, lat2, lng2) => {
   return R * c;
 };
 
+const formatMetersAndFeet = (meters, decimals = 1) => {
+  const value = Number(meters);
+  if (!Number.isFinite(value) || value < 0) return 'Unknown';
+  const feet = value * 3.28084;
+  return `${value.toFixed(decimals)}m / ${feet.toFixed(0)}ft`;
+};
+
 // Dark map style to match screenshots
 const customMapStyle = [
   {
@@ -354,6 +361,12 @@ const MapScreen = () => {
 
         if (coordinates.length >= 2) {
           setAuthorityBoundary(coordinates);
+          if (mapRef.current?.fitToCoordinates) {
+            mapRef.current.fitToCoordinates(coordinates, {
+              edgePadding: { top: 90, right: 60, bottom: 220, left: 60 },
+              animated: true,
+            });
+          }
           return;
         }
       }
@@ -1292,33 +1305,46 @@ const MapScreen = () => {
 
   const renderAuthorityBoundaries = () => {
     if (!currentAuthority) return null;
-    if (authorityBoundary?.length >= 2) {
-      return (
-        <Polyline
-          coordinates={authorityBoundary}
-          strokeColor="#FFD100"
-          strokeWidth={4}
-          lineDashPattern={[10, 10]}
-        />
-      );
-    }
 
-    // This would use actual track geometry data
-    // For now, create a simple line
-    const coordinates = [
-      { latitude: currentAuthority.Begin_Lat || region.latitude - 0.01, 
-        longitude: currentAuthority.Begin_Lng || region.longitude - 0.01 },
-      { latitude: currentAuthority.End_Lat || region.latitude + 0.01, 
-        longitude: currentAuthority.End_Lng || region.longitude + 0.01 },
-    ];
+    const coordinates = authorityBoundary?.length >= 2
+      ? authorityBoundary
+      : [
+        {
+          latitude: currentAuthority.Begin_Lat || region.latitude - 0.01,
+          longitude: currentAuthority.Begin_Lng || region.longitude - 0.01,
+        },
+        {
+          latitude: currentAuthority.End_Lat || region.latitude + 0.01,
+          longitude: currentAuthority.End_Lng || region.longitude + 0.01,
+        },
+      ];
+
+    if (!coordinates || coordinates.length < 2) return null;
+
+    const start = coordinates[0];
+    const end = coordinates[coordinates.length - 1];
 
     return (
-      <Polyline
-        coordinates={coordinates}
-        strokeColor="#FFD100"
-        strokeWidth={4}
-        lineDashPattern={[10, 10]}
-      />
+      <>
+        <Polyline
+          coordinates={coordinates}
+          strokeColor="#FFD100"
+          strokeWidth={5}
+          lineDashPattern={[10, 10]}
+        />
+
+        <Marker coordinate={start} title="Authority Begin" description={`Begin MP ${currentAuthority.Begin_MP}`} tracksViewChanges={false}>
+          <View style={styles.authorityLimitMarker}>
+            <Text style={styles.authorityLimitMarkerText}>B</Text>
+          </View>
+        </Marker>
+
+        <Marker coordinate={end} title="Authority End" description={`End MP ${currentAuthority.End_MP}`} tracksViewChanges={false}>
+          <View style={styles.authorityLimitMarker}>
+            <Text style={styles.authorityLimitMarkerText}>E</Text>
+          </View>
+        </Marker>
+      </>
     );
   };
 
@@ -1575,7 +1601,7 @@ const MapScreen = () => {
                 Position: {currentPosition.latitude.toFixed(6)}, {currentPosition.longitude.toFixed(6)}
               </Text>
               <Text style={styles.positionText}>
-                Accuracy: {currentPosition.accuracy?.toFixed(1) || 'Unknown'} meters
+                Accuracy: {formatMetersAndFeet(currentPosition.accuracy, 1)}
               </Text>
             </>
           )}
@@ -1707,7 +1733,7 @@ const MapScreen = () => {
             >
               <MaterialCommunityIcons
                 name={pin.pending ? 'map-marker-alert' : 'map-marker'}
-                size={18}
+                size={24}
                 color={pin.color}
               />
             </View>
@@ -1728,7 +1754,7 @@ const MapScreen = () => {
               longitude: currentPosition.longitude,
             }}
             title="My Position"
-            description={`Accuracy: ${currentPosition.accuracy?.toFixed(1) || 'Unknown'}m`}
+            description={`Accuracy: ${formatMetersAndFeet(currentPosition.accuracy, 1)}`}
           >
             <View style={styles.myMarker}>
               <MaterialCommunityIcons name="account" size={30} color="#FFD100" />
@@ -2377,6 +2403,21 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 4,
     borderWidth: 1,
+  },
+  authorityLimitMarker: {
+    backgroundColor: '#FFD100',
+    borderColor: '#000000',
+    borderWidth: 2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authorityLimitMarkerText: {
+    color: '#000000',
+    fontSize: 12,
+    fontWeight: '900',
   },
   layerMarkerSelected: {
     borderWidth: 2,

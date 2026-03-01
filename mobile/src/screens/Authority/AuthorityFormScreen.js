@@ -56,6 +56,8 @@ const AuthorityFormScreen = ({ navigation, route }) => {
 
   const [subdivisions, setSubdivisions] = useState([]);
   const [trackNumbers, setTrackNumbers] = useState([]);
+  const [loadingTrackNumbers, setLoadingTrackNumbers] = useState(false);
+  const [trackBoundaries, setTrackBoundaries] = useState({}); // Store BMP/EMP for each track
   const [showExpirationPicker, setShowExpirationPicker] = useState(false);
   const [expirationDate, setExpirationDate] = useState(new Date());
   const [expirationInput, setExpirationInput] = useState('');
@@ -219,26 +221,53 @@ const AuthorityFormScreen = ({ navigation, route }) => {
   };
 
   const loadTrackNumbers = async (subdivisionId) => {
+    console.log('[AuthorityForm] loadTrackNumbers called with:', { agencyId, subdivisionId });
+    
     if (!agencyId || !subdivisionId) {
+      console.log('[AuthorityForm] Missing agencyId or subdivisionId, clearing track numbers');
       setTrackNumbers([]);
+      setTrackBoundaries({});
+      setLoadingTrackNumbers(false);
       return;
     }
 
     try {
+      setLoadingTrackNumbers(true);
       const response = await apiService.getSubdivisionTracks(agencyId, subdivisionId);
       
       console.log('Track numbers API response:', response);
       
       if (response.success && response.data) {
+        // Store track boundaries for validation
+        const boundaries = {};
+        
         const apiTrackNumberOptions = response.data
           .map((track) => {
             const trackType = track.Track_Type ?? track.track_type;
             const trackNumber = track.Track_Number ?? track.track_number;
-            if (!trackType || !trackNumber) return null;
+            const bmp = track.BMP ?? track.bmp;
+            const emp = track.EMP ?? track.emp;
+
+            const hasTrackType = trackType !== undefined && trackType !== null && String(trackType).trim() !== '';
+            const hasTrackNumber = trackNumber !== undefined && trackNumber !== null && String(trackNumber).trim() !== '';
+
+            if (!hasTrackType || !hasTrackNumber) return null;
+
+            const normalizedTrackType = String(trackType).trim();
+            const normalizedTrackNumber = String(trackNumber).trim();
+
+            // Store boundaries with key format "TrackType|||TrackNumber"
+            const key = `${normalizedTrackType}|||${normalizedTrackNumber}`;
+            if (bmp !== undefined && emp !== undefined) {
+              boundaries[key] = {
+                bmp: parseFloat(bmp),
+                emp: parseFloat(emp),
+              };
+            }
 
             return {
-              label: `${trackType} - ${trackNumber}`,
-              value: `${trackType}|||${trackNumber}`,
+              label: `${normalizedTrackType} - ${normalizedTrackNumber}`,
+              value: key,
             };
           })
           .filter(Boolean);
@@ -258,16 +287,23 @@ const AuthorityFormScreen = ({ navigation, route }) => {
         );
 
         setTrackNumbers(merged);
-        console.log('Loaded', merged.length, 'track numbers from API/config');
+        setTrackBoundaries(boundaries);
+        console.log('[AuthorityForm] Loaded', merged.length, 'track numbers:', merged);
       } else {
+        console.log('[AuthorityForm] No track data in response');
         setTrackNumbers([]);
+        setTrackBoundaries({});
       }
     } catch (error) {
       if (error?.status === 404) {
-        console.warn('No tracks found for selected subdivision under this agency');
+        console.warn('[AuthorityForm] No tracks found for selected subdivision under this agency');
+      } else {
+        console.error('[AuthorityForm] Failed to load track numbers from API:', error);
       }
-      console.error('Failed to load track numbers from API:', error);
       setTrackNumbers([]);
+      setTrackBoundaries({});
+    } finally {
+      setLoadingTrackNumbers(false);
     }
   };
 
@@ -385,6 +421,21 @@ const AuthorityFormScreen = ({ navigation, route }) => {
         endMP < beginMP
       ) {
         validationErrors.push(`${getFieldLabel('endMP', 'End MP')} must be greater than or equal to ${getFieldLabel('beginMP', 'Begin MP')}`);
+      }
+
+      // Validate authority stays within track boundaries
+      const trackKey = `${trackType}|||${trackNumber}`;
+      const  trackBound = trackBoundaries[trackKey];
+      if (trackBound && !Number.isNaN(beginMP) && !Number.isNaN(endMP)) {
+        const { bmp: trackBMP, emp: trackEMP } = trackBound;
+        
+        if (beginMP < trackBMP || endMP > trackEMP) {
+          validationErrors.push(
+            `Authority must be within track limits (${trackType} ${trackNumber}): ${trackBMP} - ${trackEMP} MP.\n\n` +
+            `You attempted: ${beginMP} - ${endMP} MP.\n\n` +
+            `Please ensure your authority range falls completely within the assigned track boundaries.`
+          );
+        }
       }
 
       if (validationErrors.length) {
@@ -624,28 +675,34 @@ const AuthorityFormScreen = ({ navigation, route }) => {
 
         {/* Track Number */}
         {isFieldEnabled('trackNumber') && renderFormField('trackNumber', getFieldLabel('trackNumber', 'Track Number'), (
-          <Controller
-            control={control}
-            name="trackNumber"
-            render={({ field: { onChange, value } }) => (
-              <DropDownPicker
-                open={trackNumberOpen}
-                value={value}
-                items={trackNumbers}
-                setOpen={setTrackNumberOpen}
-                setValue={(callback) => onChange(callback(value))}
-                setItems={setTrackNumbers}
-                style={styles.dropdown}
-                dropDownContainerStyle={styles.dropdownContainer}
-                textStyle={styles.dropdownText}
-                placeholder="Select track number"
-                zIndex={900}
-                zIndexInverse={3100}
-                listMode="SCROLLVIEW"
-                disabled={trackNumbers.length === 0}
-              />
+          <View>
+            <Controller
+              control={control}
+              name="trackNumber"
+              render={({ field: { onChange, value } }) => (
+                <DropDownPicker
+                  open={trackNumberOpen}
+                  value={value}
+                  items={trackNumbers}
+                  setOpen={setTrackNumberOpen}
+                  setValue={(callback) => onChange(callback(value))}
+                  setItems={setTrackNumbers}
+                  style={styles.dropdown}
+                  dropDownContainerStyle={styles.dropdownContainer}
+                  textStyle={styles.dropdownText}
+                  placeholder={loadingTrackNumbers ? "Loading track numbers..." : trackNumbers.length === 0 ? "No tracks available" : "Select track number"}
+                  zIndex={900}
+                  zIndexInverse={3100}
+                  listMode="SCROLLVIEW"
+                  disabled={trackNumbers.length === 0 || loadingTrackNumbers}
+                  loading={loadingTrackNumbers}
+                />
+              )}
+            />
+            {!loadingTrackNumbers && trackNumbers.length === 0 && selectedSubdivision && (
+              <Text style={styles.helperText}>No track data available for this subdivision. You may need to import track data first.</Text>
             )}
-          />
+          </View>
         ), isFieldRequired('trackNumber'))}
 
         {/* Display Name */}
@@ -886,6 +943,12 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     marginLeft: 10,
+  },
+  helperText: {
+    marginTop: 6,
+    fontSize: 12,
+    color: '#999999',
+    fontStyle: 'italic',
   },
 });
 

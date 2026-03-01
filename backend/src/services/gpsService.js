@@ -98,9 +98,16 @@ class GPSService {
   }
 
   async processGPSUpdate(gpsData) {
-    const { userId, authorityId, latitude, longitude } = gpsData;
+    const { userId, latitude, longitude } = gpsData;
+    let authorityId = Number(gpsData.authorityId);
+    if (!Number.isFinite(authorityId) || authorityId <= 0) {
+      authorityId = null;
+    }
 
     try {
+      authorityId = await this.resolveValidAuthorityId(userId, authorityId);
+      gpsData.authorityId = authorityId;
+
       // Store last position
       this.userPositions.set(userId, {
         latitude,
@@ -111,6 +118,10 @@ class GPSService {
 
       // Log GPS data
       await this.logGPSPosition(gpsData);
+
+      if (!authorityId) {
+        return { logged: true, authority: null };
+      }
 
       // Get authority details
       const authority = await this.getAuthoritySnapshot(authorityId);
@@ -196,6 +207,47 @@ class GPSService {
       logger.error('Process GPS update error:', error);
       return { logged: false, error: error.message };
     }
+  }
+
+  async resolveValidAuthorityId(userId, providedAuthorityId) {
+    const parsedUserId = Number(userId);
+    if (!Number.isFinite(parsedUserId) || parsedUserId <= 0) return null;
+
+    // If a specific authority id was provided, ensure it exists.
+    if (Number.isFinite(Number(providedAuthorityId)) && Number(providedAuthorityId) > 0) {
+      const authorityResult = await queryWithRetry(
+        (pool) => pool.request().input('authorityId', sql.Int, Number(providedAuthorityId)),
+        `
+          SELECT TOP 1 Authority_ID
+          FROM Authorities
+          WHERE Authority_ID = @authorityId
+        `,
+        'resolveValidAuthorityId.byId'
+      );
+
+      if (authorityResult.recordset.length > 0) {
+        return Number(providedAuthorityId);
+      }
+    }
+
+    // Fallback to the user's current active authority (if any).
+    const activeResult = await queryWithRetry(
+      (pool) => pool.request().input('userId', sql.Int, parsedUserId),
+      `
+        SELECT TOP 1 Authority_ID
+        FROM Authorities
+        WHERE User_ID = @userId
+          AND Is_Active = 1
+        ORDER BY Start_Time DESC, Authority_ID DESC
+      `,
+      'resolveValidAuthorityId.byUser'
+    );
+
+    if (activeResult.recordset.length > 0) {
+      return Number(activeResult.recordset[0].Authority_ID);
+    }
+
+    return null;
   }
 
   async logGPSPosition(gpsData) {

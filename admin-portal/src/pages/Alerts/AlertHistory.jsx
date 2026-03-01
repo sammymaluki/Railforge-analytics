@@ -33,11 +33,19 @@ import {
 import { format } from 'date-fns';
 import { useSelector } from 'react-redux';
 import api from '../../services/api';
+import { isGlobalAdmin } from '../../utils/rbac';
 
 const AlertHistory = () => {
   const { user } = useSelector((state) => state.auth);
-  // Use user's agency ID
-  const agencyId = user?.Agency_ID || 17;
+  const globalAdmin = isGlobalAdmin(user);
+  
+  // For Global Admins, allow selecting agency; for others, use their own agency
+  const defaultAgencyId = user?.Agency_ID || user?.agencyId;
+  const [selectedAgencyId, setSelectedAgencyId] = useState(defaultAgencyId);
+  const [agencies, setAgencies] = useState([]);
+  
+  // The agency ID to use for API calls
+  const agencyId = globalAdmin ? selectedAgencyId : defaultAgencyId;
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -56,11 +64,32 @@ const AlertHistory = () => {
     userId: ''
   });
 
+  // Load agencies for Global Admins
   useEffect(() => {
-    loadAlerts();
-    loadStats();
+    if (globalAdmin) {
+      loadAgencies();
+    }
+  }, [globalAdmin]);
+
+  // Reload data when agency or filters change
+  useEffect(() => {
+    if (agencyId) {
+      loadAlerts();
+      loadStats();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, page, rowsPerPage]);
+  }, [agencyId, filters, page, rowsPerPage]);
+
+  const loadAgencies = async () => {
+    try {
+      const response = await api.get('/agencies');
+      if (response.data.success) {
+        setAgencies(response.data.data.agencies || []);
+      }
+    } catch (err) {
+      console.error('Failed to load agencies:', err);
+    }
+  };
 
   const loadAlerts = async () => {
     setLoading(true);
@@ -214,6 +243,41 @@ const AlertHistory = () => {
           </Button>
         </Box>
       </Box>
+
+      {/* Agency Selector - Only for Global Admins */}
+      {globalAdmin && agencies.length > 0 && (
+        <Paper sx={{ p: 2, mb: 3, bgcolor: '#1E1E1E', borderLeft: '4px solid #FFD100' }}>
+          <Grid container spacing={2} alignItems="center">
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth>
+                <InputLabel>Select Agency to View</InputLabel>
+                <Select
+                  value={selectedAgencyId || ''}
+                  label="Select Agency to View"
+                  onChange={(e) => setSelectedAgencyId(e.target.value)}
+                  sx={{ height: 56, bgcolor: '#121212' }}
+                >
+                  {agencies.map((agency) => (
+                    <MenuItem 
+                      key={agency.Agency_ID} 
+                      value={agency.Agency_ID}
+                    >
+                      {agency.Agency_Name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={6}>
+              <Alert severity="info" icon={false} sx={{ mb: 0 }}>
+                <Typography variant="caption">
+                  <strong>Global Admin Mode:</strong> Viewing alert history for the selected agency.
+                </Typography>
+              </Alert>
+            </Grid>
+          </Grid>
+        </Paper>
+      )}
 
       {/* Statistics Cards */}
       {stats && (

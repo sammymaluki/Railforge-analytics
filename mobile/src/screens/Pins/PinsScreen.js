@@ -260,7 +260,7 @@ const PinsScreen = () => {
         <Text style={styles.headerTitle}>Pin Drops ({filteredPins.length})</Text>
         <View style={styles.headerActions}>
           <TouchableOpacity style={styles.emailButton} onPress={handleEmailPinList}>
-            <MaterialCommunityIcons name="email-outline" size={20} color={theme.colors.textPrimary} />
+            <MaterialCommunityIcons name="email-outline" size={26} color={theme.colors.textPrimary} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.addButton} onPress={handleDropNewPin}>
             <MaterialCommunityIcons name="plus" size={24} color={theme.colors.textPrimary} />
@@ -340,14 +340,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emailButton: {
-    backgroundColor: theme.colors.cardBackground,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderWidth: 1.5,
+    borderColor: 'rgba(59, 130, 246, 0.6)',
   },
   addButton: {
     backgroundColor: theme.colors.accent,

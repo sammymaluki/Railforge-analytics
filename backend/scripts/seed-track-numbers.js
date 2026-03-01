@@ -20,7 +20,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || 'YourStrong!Passw0rd',
   port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
   options: {
-    encrypt: false,
+    encrypt: true,
     trustServerCertificate: true,
     enableArithAbort: true,
     connectTimeout: 15000,

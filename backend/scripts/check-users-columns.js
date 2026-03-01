@@ -1,13 +1,19 @@
 const sql = require('mssql');
+require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
 
 const config = {
-  server: 'localhost',
-  database: 'HerzogRailAuthority',
-  user: 'sa',
-  password: 'YourStrong!Passw0rd',
+  server: process.env.DB_HOST || 'localhost',
+  database: process.env.DB_NAME || 'HerzogRailAuthority',
+  user: process.env.DB_USER || 'sa',
+  password: process.env.DB_PASSWORD || 'YourStrong!Passw0rd',
   options: {
-    encrypt: false,
-    trustServerCertificate: true
+    encrypt: parseBoolean(process.env.DB_ENCRYPT, true),
+    trustServerCertificate: parseBoolean(process.env.DB_TRUST_SERVER_CERT, true)
   }
 };
 

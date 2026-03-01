@@ -57,9 +57,11 @@ const createPinType = async (req, res) => {
   try {
     const { agencyId } = req.params;
     const {
-      category,
-      subtype,
-      color,
+      category: categoryRaw,
+      subtype: subtypeRaw,
+      pinCategory,
+      pinSubtype,
+      color: colorRaw,
       iconUrl,
       sortOrder,
       photosEnabled = true,
@@ -71,6 +73,9 @@ const createPinType = async (req, res) => {
       photoAccessRoles = 'Administrator,Supervisor,Field_Worker',
       photoExportMode = 'links'
     } = req.body;
+    const category = String(categoryRaw ?? pinCategory ?? '').trim();
+    const subtype = String(subtypeRaw ?? pinSubtype ?? '').trim();
+    const color = String(colorRaw ?? '').trim();
 
     // Only administrators can create pin types
     if (req.user.Role !== 'Administrator') {
@@ -157,9 +162,11 @@ const updatePinType = async (req, res) => {
   try {
     const { pinTypeId } = req.params;
     const {
-      category,
-      subtype,
-      color,
+      category: categoryRaw,
+      subtype: subtypeRaw,
+      pinCategory,
+      pinSubtype,
+      color: colorRaw,
       iconUrl,
       sortOrder,
       isActive,
@@ -172,6 +179,13 @@ const updatePinType = async (req, res) => {
       photoAccessRoles,
       photoExportMode
     } = req.body;
+    const category = categoryRaw !== undefined || pinCategory !== undefined
+      ? String(categoryRaw ?? pinCategory ?? '').trim()
+      : undefined;
+    const subtype = subtypeRaw !== undefined || pinSubtype !== undefined
+      ? String(subtypeRaw ?? pinSubtype ?? '').trim()
+      : undefined;
+    const color = colorRaw !== undefined ? String(colorRaw).trim() : undefined;
 
     // Only administrators can update pin types
     if (req.user.Role !== 'Administrator') {

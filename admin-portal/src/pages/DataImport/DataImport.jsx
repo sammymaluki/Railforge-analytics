@@ -16,7 +16,9 @@ import {
   ListItemText,
   ListItemIcon,
   Divider,
-  Chip
+  Chip,
+  FormControlLabel,
+  Switch
 } from '@mui/material';
 import {
   CloudUpload as UploadIcon,
@@ -27,8 +29,11 @@ import {
   Warning as WarningIcon
 } from '@mui/icons-material';
 import api from '../../services/api';
+import { useSelector } from 'react-redux';
 
 const DataImport = () => {
+  const { user } = useSelector((state) => state.auth);
+  const agencyId = Number(user?.Agency_ID || user?.agencyId || 0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -36,6 +41,9 @@ const DataImport = () => {
   const [uploadResults, setUploadResults] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [importType, setImportType] = useState(null);
+  const [createMissingSubdivisions, setCreateMissingSubdivisions] = useState(false);
+  const [useAgencyCodeFromFile, setUseAgencyCodeFromFile] = useState(false);
+  const [createMissingAgencies, setCreateMissingAgencies] = useState(false);
 
   const importTypes = [
     {
@@ -48,7 +56,8 @@ const DataImport = () => {
       icon: <FileIcon sx={{ fontSize: 40 }} />,
       color: '#2196f3',
       instructions: [
-        'CSV or Excel format with columns: Subdivision, Track_Type, Track_Number',
+        'CSV or Excel format with columns: Subdivision_ID, Agency_ID, Track_Type, Track_Number, Begin_MP, End_MP',
+        'Agency_ID is required to prevent overlapping names with other railroads',
         'Maximum 1000 records per file',
         'Duplicates will be skipped'
       ]
@@ -63,7 +72,8 @@ const DataImport = () => {
       icon: <FileIcon sx={{ fontSize: 40 }} />,
       color: '#4caf50',
       instructions: [
-        'CSV/Excel format with columns: Subdivision, Milepost, Latitude, Longitude',
+        'CSV/Excel format with columns: Subdivision_ID, Agency_ID, Track_Type, Track_Number, MP, Latitude, Longitude',
+        'Agency_ID is required to prevent overlapping names with other railroads',
         'Or GeoJSON format with milepost properties',
         'Coordinates must be in WGS84 (EPSG:4326)'
       ]
@@ -101,6 +111,10 @@ const DataImport = () => {
       setError('Please select a file to upload');
       return;
     }
+    if (!agencyId) {
+      setError('Unable to determine your agency. Please re-login and try again.');
+      return;
+    }
 
     setLoading(true);
     setError(null);
@@ -114,14 +128,17 @@ const DataImport = () => {
       
       // Add required parameters based on import type
       if (importType.id === 'track-data') {
-        formData.append('agencyId', '1');
+        formData.append('agencyId', String(agencyId));
         formData.append('dataType', 'tracks');
       } else if (importType.id === 'milepost-geometry') {
-        formData.append('agencyId', '1');
+        formData.append('agencyId', String(agencyId));
         formData.append('dataType', 'mileposts');
       } else if (importType.id === 'users') {
-        formData.append('agencyId', '1');
+        formData.append('agencyId', String(agencyId));
       }
+      formData.append('createMissingSubdivisions', String(createMissingSubdivisions));
+      formData.append('useAgencyCodeFromFile', String(useAgencyCodeFromFile));
+      formData.append('createMissingAgencies', String(createMissingAgencies));
 
       const config = {
         headers: {
@@ -138,8 +155,13 @@ const DataImport = () => {
       const response = await api.post(importType.endpoint, formData, config);
 
       if (response.data.success) {
-        setSuccess(`Successfully imported ${selectedFile.name}`);
-        setUploadResults(response.data.data);
+        const results = response.data.data || {};
+        setUploadResults(results);
+        if ((results.imported || 0) > 0) {
+          setSuccess(`Successfully imported ${selectedFile.name}`);
+        } else {
+          setError(`Upload completed, but no records were imported from ${selectedFile.name}. Review messages below.`);
+        }
         setSelectedFile(null);
         setImportType(null);
       }
@@ -174,6 +196,9 @@ const DataImport = () => {
   const handleClearFile = () => {
     setSelectedFile(null);
     setImportType(null);
+    setCreateMissingSubdivisions(false);
+    setUseAgencyCodeFromFile(false);
+    setCreateMissingAgencies(false);
     setError(null);
     setSuccess(null);
     setUploadResults(null);
@@ -321,6 +346,49 @@ const DataImport = () => {
                 sx={{ mt: 1 }}
               />
             </Box>
+            {(importType?.id === 'track-data' || importType?.id === 'milepost-geometry') && (
+              <Box sx={{ mr: 2 }}>
+                <FormControlLabel
+                  control={(
+                    <Switch
+                      checked={createMissingSubdivisions}
+                      onChange={(e) => setCreateMissingSubdivisions(e.target.checked)}
+                    />
+                  )}
+                  label="Create missing subdivisions during import"
+                />
+                <Typography variant="caption" color="text.secondary" display="block">
+                  Optional safe mode: creates missing subdivisions for this agency only.
+                </Typography>
+                <FormControlLabel
+                  control={(
+                    <Switch
+                      checked={useAgencyCodeFromFile}
+                      onChange={(e) => setUseAgencyCodeFromFile(e.target.checked)}
+                    />
+                  )}
+                  label="Use Agency_CD from file"
+                  sx={{ mt: 1 }}
+                />
+                <Typography variant="caption" color="text.secondary" display="block">
+                  Global admin mode: routes each row by Agency_CD instead of your current agency.
+                </Typography>
+                <FormControlLabel
+                  control={(
+                    <Switch
+                      checked={createMissingAgencies}
+                      onChange={(e) => setCreateMissingAgencies(e.target.checked)}
+                      disabled={!useAgencyCodeFromFile}
+                    />
+                  )}
+                  label="Create missing agencies from Agency_CD"
+                  sx={{ mt: 1 }}
+                />
+                <Typography variant="caption" color="text.secondary" display="block">
+                  If Agency_CD does not exist, create it automatically (global admin only).
+                </Typography>
+              </Box>
+            )}
             <Box>
               <Button onClick={handleClearFile} sx={{ mr: 1 }}>
                 Cancel

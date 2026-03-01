@@ -18,6 +18,11 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 // Database configuration
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
+
 const dbConfig = {
   server: process.env.DB_HOST || 'localhost',
   database: process.env.DB_NAME || 'HerzogRailAuthority',
@@ -25,8 +30,8 @@ const dbConfig = {
   password: process.env.DB_PASSWORD || '',
   port: parseInt(process.env.DB_PORT || '1434', 10),
   options: {
-    encrypt: false,
-    trustServerCertificate: true,
+    encrypt: parseBoolean(process.env.DB_ENCRYPT, true),
+    trustServerCertificate: parseBoolean(process.env.DB_TRUST_SERVER_CERT, true),
     enableArithAbort: true,
     connectTimeout: 60000,
     requestTimeout: 60000,

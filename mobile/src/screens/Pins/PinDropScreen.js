@@ -16,6 +16,7 @@ import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import DropDownPicker from 'react-native-dropdown-picker';
+import { useFocusEffect } from '@react-navigation/native';
 import { 
   COLORS, 
   SPACING, 
@@ -112,6 +113,7 @@ const PinDropScreen = ({ navigation, route }) => {
   const { currentAuthority } = useSelector((state) => state.authority);
   const editingPin = route.params?.pin || null;
   const isEditing = Boolean(editingPin);
+  const userAgencyId = getAgencyIdFromUser(user);
   
   const [pinCategories, setPinCategories] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -120,6 +122,8 @@ const PinDropScreen = ({ navigation, route }) => {
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingLocation, setLoadingLocation] = useState(true);
+  const [loadingCategories, setLoadingCategories] = useState(false);
+  const [hasAttemptedCategoryLoad, setHasAttemptedCategoryLoad] = useState(false);
   
   // Auto-captured data
   const [location, setLocation] = useState(null);
@@ -129,13 +133,24 @@ const PinDropScreen = ({ navigation, route }) => {
   const selectedPinType = pinCategories.find((category) => String(category.Pin_Type_ID) === String(selectedCategory));
 
   useEffect(() => {
-    if (user?.token) {
-      fetchPinCategories();
-    }
     if (!isEditing) {
       getCurrentLocation();
     }
-  }, [user?.token]);
+  }, [isEditing]);
+
+  useEffect(() => {
+    if (user?.token && userAgencyId) {
+      fetchPinCategories();
+    }
+  }, [user?.token, userAgencyId]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      if (user?.token && userAgencyId) {
+        fetchPinCategories();
+      }
+    }, [user?.token, userAgencyId])
+  );
 
   useEffect(() => {
     if (!editingPin) {
@@ -181,7 +196,9 @@ const PinDropScreen = ({ navigation, route }) => {
 
   const fetchPinCategories = async () => {
     try {
-      const agencyId = getAgencyIdFromUser(user);
+      setLoadingCategories(true);
+      setHasAttemptedCategoryLoad(true);
+      const agencyId = userAgencyId;
       if (!agencyId) {
         logger.warn('Pins', 'No agency ID found on user payload; cannot fetch pin categories');
         setPinCategories([]);
@@ -189,8 +206,10 @@ const PinDropScreen = ({ navigation, route }) => {
       }
 
       logger.info('Pins', 'Fetching pin types for agency:', agencyId);
-      const response = await apiService.api.get(
-        `/config/agencies/${agencyId}/pin-types`
+      const response = await apiService.requestWithRetry(
+        () => apiService.api.get(`/config/agencies/${agencyId}/pin-types`),
+        3,
+        800
       );
       
       logger.info('Pins', 'Pin types API response:', response.data);
@@ -235,6 +254,8 @@ const PinDropScreen = ({ navigation, route }) => {
       logger.error('Pins', 'Error fetching pin categories:', error);
       // Keep empty array if API fails - user must have valid categories
       setPinCategories([]);
+    } finally {
+      setLoadingCategories(false);
     }
   };
 
@@ -565,7 +586,13 @@ const PinDropScreen = ({ navigation, route }) => {
             zIndex={3000}
             zIndexInverse={1000}
           />
-          {pinCategories.length === 0 && (
+          {loadingCategories && (
+            <View style={styles.categoriesLoadingContainer}>
+              <ActivityIndicator size="small" color={COLORS.accent} />
+              <Text style={styles.categoriesLoadingText}>Loading categories...</Text>
+            </View>
+          )}
+          {!loadingCategories && hasAttemptedCategoryLoad && pinCategories.length === 0 && (
             <TouchableOpacity onPress={fetchPinCategories} style={styles.retryCategoriesButton}>
               <Text style={styles.retryCategoriesText}>No categories available. Tap to retry.</Text>
             </TouchableOpacity>
@@ -754,6 +781,16 @@ const styles = StyleSheet.create({
   },
   retryCategoriesButton: {
     marginTop: SPACING.sm,
+  },
+  categoriesLoadingContainer: {
+    marginTop: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoriesLoadingText: {
+    marginLeft: SPACING.xs,
+    color: COLORS.textSecondary,
+    fontSize: FONT_SIZES.sm,
   },
   retryCategoriesText: {
     color: COLORS.accent,

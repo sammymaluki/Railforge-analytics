@@ -136,11 +136,11 @@ export default function TripSummaryScreen({ route, navigation }) {
       {item.Notes && <Text style={styles.pinNotes}>{item.Notes}</Text>}
       <View style={styles.pinDetails}>
         <Text style={styles.pinDetail}>
-          <Ionicons name="location" size={14} color={COLORS.textSecondary} />
+          <Ionicons name="location" size={18} color={COLORS.accent} />
           {' '}MP {item.MP || item.mp || '--'} • {item.Track_Type} {item.Track_Number}
         </Text>
         <Text style={styles.pinDetail}>
-          <Ionicons name="time" size={14} color={COLORS.textSecondary} />
+          <Ionicons name="time" size={18} color={COLORS.accent} />
           {' '}{new Date(item.Created_At || item.created_at).toLocaleString()}
         </Text>
       </View>
@@ -208,7 +208,7 @@ export default function TripSummaryScreen({ route, navigation }) {
           <Text style={styles.cardTitle}>Export Options</Text>
           
           <View style={styles.emailInputContainer}>
-            <Ionicons name="mail" size={20} color={COLORS.textSecondary} style={styles.emailIcon} />
+            <Ionicons name="mail" size={24} color={COLORS.accent} style={styles.emailIcon} />
             <TextInput
               style={styles.emailInput}
               placeholder="Enter email address"
@@ -230,7 +230,7 @@ export default function TripSummaryScreen({ route, navigation }) {
                 <ActivityIndicator color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons name="mail-outline" size={20} color="#FFFFFF" />
+                  <Ionicons name="mail-outline" size={24} color="#FFFFFF" />
                   <Text style={styles.exportButtonText}>Email Report</Text>
                 </>
               )}
@@ -448,8 +448,9 @@ const styles = StyleSheet.create({
     marginTop: SPACING.xs,
   },
   pinDetail: {
-    fontSize: FONT_SIZES.xs,
+    fontSize: FONT_SIZES.sm,
     color: COLORS.textSecondary,
     marginTop: SPACING.xxs,
+    lineHeight: 18,
   },
 });

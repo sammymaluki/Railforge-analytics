@@ -49,12 +49,17 @@ const AuthorityScreen = () => {
               logger.info('Authority', 'GPS tracking stopped');
               
               await dispatch(endAuthority({ 
-                authorityId: activeAuthority.Authority_ID, 
+                authorityId: activeAuthority.Authority_ID || activeAuthority.authority_id, 
                 confirmEndTracking: true 
               })).unwrap();
               Alert.alert('Success', 'Authority cleared successfully');
             } catch (error) {
-              Alert.alert('Error', error.message || 'Failed to clear authority');
+              // Handle both string errors and error objects
+              const errorMessage = (typeof error === 'string') 
+                ? error 
+                : (error?.message || 'Failed to clear authority');
+              logger.error('Authority', 'Failed to clear authority:', error);
+              Alert.alert('Error', errorMessage);
             }
           },
         },

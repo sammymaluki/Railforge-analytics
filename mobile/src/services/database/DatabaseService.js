@@ -114,10 +114,20 @@ class DatabaseService {
 
   async endAuthority(authorityId, confirmEndTracking = true) {
     try {
-      // Remove active authority from storage
+      console.log(`📊 DatabaseService: Ending authority ${authorityId}`);
+      
+      // Remove active authority from AsyncStorage
       await AsyncStorage.removeItem(`${this.storagePrefix}activeAuthority`);
+      console.log(`📊 DatabaseService: Removed active authority from AsyncStorage`);
+      
+      // Note: Additional local database cleanup (pins, GPS logs) would be handled
+      // by the sync service when it processes the authority end event
+      
+      console.log(`📊 DatabaseService: Authority ${authorityId} cleanup complete`);
+      return { success: true, authorityId };
     } catch (error) {
-      console.error('Error ending authority:', error);
+      console.error(`❌ DatabaseService: Error ending authority:`, error);
+      throw error; // Propagate error so caller knows about failures
     }
   }
 

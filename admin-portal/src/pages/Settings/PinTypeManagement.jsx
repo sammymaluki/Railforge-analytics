@@ -370,19 +370,20 @@ const PinTypeManagement = () => {
       )}
 
       {/* Add/Edit Dialog */}
-      <Dialog open={dialogOpen} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
+      <Dialog open={dialogOpen} onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle>
           {editingPin ? 'Edit Pin Type' : 'Add Pin Type'}
         </DialogTitle>
         <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
-              <FormControl fullWidth>
-                <InputLabel>Category</InputLabel>
+          <Grid container spacing={3} sx={{ mt: 1 }}>
+            <Grid item xs={12} sm={6} sx={{ minWidth: 180 }}>
+              <FormControl fullWidth sx={{ minWidth: 180 }}>
+                <InputLabel>Category *</InputLabel>
                 <Select
                   value={formData.category}
-                  label="Category"
+                  label="Category *"
                   onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                  sx={{ height: 56, minWidth: 180 }}
                 >
                   {defaultCategories.map((cat) => (
                     <MenuItem key={cat} value={cat}>{cat}</MenuItem>
@@ -391,10 +392,10 @@ const PinTypeManagement = () => {
               </FormControl>
             </Grid>
 
-            <Grid item xs={12}>
+            <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
-                label="Subtype"
+                label="Subtype *"
                 value={formData.subtype}
                 onChange={(e) => setFormData({ ...formData, subtype: e.target.value })}
                 required
@@ -402,19 +403,30 @@ const PinTypeManagement = () => {
               />
             </Grid>
 
-            <Grid item xs={6}>
+            <Grid item xs={6} sm={3} sx={{ minWidth: 150 }}>
               <TextField
                 fullWidth
-                label="Color"
+                label="Color *"
                 type="color"
                 value={formData.color}
                 onChange={(e) => setFormData({ ...formData, color: e.target.value })}
                 required
                 InputLabelProps={{ shrink: true }}
+                helperText="Pick category color"
+                sx={{
+                  minWidth: 150,
+                  '& .MuiInputBase-root': {
+                    minHeight: 56
+                  },
+                  '& input': {
+                    minHeight: 36,
+                    cursor: 'pointer'
+                  }
+                }}
               />
             </Grid>
 
-            <Grid item xs={6}>
+            <Grid item xs={6} sm={3}>
               <TextField
                 fullWidth
                 label="Sort Order"
@@ -457,7 +469,7 @@ const PinTypeManagement = () => {
                 label="Require at least one photo"
               />
             </Grid>
-            <Grid item xs={4}>
+            <Grid item xs={6}>
               <TextField
                 fullWidth
                 label="Max Photos"
@@ -466,53 +478,61 @@ const PinTypeManagement = () => {
                 disabled={!formData.photosEnabled}
                 onChange={(e) => setFormData({ ...formData, maxPhotos: parseInt(e.target.value, 10) || 1 })}
                 inputProps={{ min: 1, max: 10 }}
+                helperText="Max photos per pin (1-10)"
+                variant="outlined"
               />
             </Grid>
-            <Grid item xs={4}>
+            <Grid item xs={6}>
               <TextField
                 fullWidth
-                label="Max Size (MB)"
+                label="Max File Size (MB)"
                 type="number"
                 value={formData.maxPhotoSizeMb}
                 disabled={!formData.photosEnabled}
                 onChange={(e) => setFormData({ ...formData, maxPhotoSizeMb: parseInt(e.target.value, 10) || 10 })}
                 inputProps={{ min: 1, max: 25 }}
+                helperText="Maximum per file (1-25 MB)"
+                variant="outlined"
               />
             </Grid>
-            <Grid item xs={4}>
+            <Grid item xs={6}>
               <TextField
                 fullWidth
-                label="Compression %"
+                label="Compression Quality"
                 type="number"
                 value={formData.photoCompressionQuality}
                 disabled={!formData.photosEnabled}
                 onChange={(e) => setFormData({ ...formData, photoCompressionQuality: parseInt(e.target.value, 10) || 80 })}
                 inputProps={{ min: 10, max: 100 }}
+                helperText="Compression % (10-100)"
+                variant="outlined"
               />
             </Grid>
             <Grid item xs={6}>
               <TextField
                 fullWidth
-                label="Retention Days"
+                label="Retention Period (Days)"
                 type="number"
                 value={formData.photoRetentionDays}
                 disabled={!formData.photosEnabled}
                 onChange={(e) => setFormData({ ...formData, photoRetentionDays: e.target.value })}
-                helperText="Blank means no automatic expiry"
+                helperText="Blank = no auto-expiry"
                 inputProps={{ min: 1 }}
+                variant="outlined"
               />
             </Grid>
             <Grid item xs={6}>
               <FormControl fullWidth>
-                <InputLabel>Export Mode</InputLabel>
+                <InputLabel>Photo Export Format</InputLabel>
                 <Select
                   value={formData.photoExportMode}
-                  label="Export Mode"
+                  label="Photo Export Format"
                   disabled={!formData.photosEnabled}
                   onChange={(e) => setFormData({ ...formData, photoExportMode: e.target.value })}
+                  sx={{ height: 56 }}
                 >
-                  <MenuItem value="links">Links</MenuItem>
-                  <MenuItem value="attachments">Attachments</MenuItem>
+                  <MenuItem value="links">Links Only</MenuItem>
+                  <MenuItem value="attachments">Attached Files</MenuItem>
                 </Select>
               </FormControl>
             </Grid>

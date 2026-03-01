@@ -22,6 +22,9 @@ import {
   TextField,
   Grid,
   MenuItem,
+  FormControl,
+  InputLabel,
+  Select,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -88,6 +91,7 @@ const UserList = () => {
 
   const handleOpenDialog = () => {
     setEditingUser(null);
+    setError(null);
     setFormData({
       username: '',
       password: '',
@@ -118,6 +122,7 @@ const UserList = () => {
 
   const handleCloseDialog = () => {
     setOpenDialog(false);
+    setError(null);
   };
 
   const handleInputChange = (e) => {
@@ -135,6 +140,13 @@ const UserList = () => {
     const errors = {};
     if (!formData.username.trim()) {
       errors.username = 'Username is required';
+    } else if (!editingUser) {
+      const exists = users.some(
+        (u) => String(u?.Username || '').toLowerCase() === String(formData.username || '').trim().toLowerCase()
+      );
+      if (exists) {
+        errors.username = 'Username already exists';
+      }
     }
     // Password only required for new users
     if (!editingUser && !formData.password.trim()) {
@@ -335,19 +347,24 @@ const UserList = () => {
       </Card>
 
       {/* Create/Edit User Dialog */}
-      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
+      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="md" fullWidth>
         <DialogTitle>{editingUser ? 'Edit User' : 'Create New User'}</DialogTitle>
         <DialogContent>
-          <Grid container spacing={2} sx={{ mt: 1 }}>
-            <Grid item xs={12}>
+          {error && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              {error}
+            </Alert>
+          )}
+          <Grid container spacing={3} sx={{ mt: 1 }}>
+            <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
-                label="Username"
+                label="Username *"
                 name="username"
                 value={formData.username}
                 onChange={handleInputChange}
                 error={!!formErrors.username}
-                helperText={formErrors.username}
+                helperText={formErrors.username || 'Unique login identifier'}
                 required
                 disabled={editingUser} // Disable username editing
               />
@@ -365,15 +382,15 @@ const UserList = () => {
                 required={!editingUser}
               />
             </Grid>
-            <Grid item xs={12}>
+            <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
-                label="Employee Name"
+                label="Employee Name *"
                 name="employeeName"
                 value={formData.employeeName}
                 onChange={handleInputChange}
                 error={!!formErrors.employeeName}
-                helperText={formErrors.employeeName}
+                helperText={formErrors.employeeName || 'Full name of the employee'}
                 required
               />
             </Grid>
@@ -384,6 +401,7 @@ const UserList = () => {
                 name="employeeContact"
                 value={formData.employeeContact}
                 onChange={handleInputChange}
+                helperText="Employee phone number'"
               />
             </Grid>
             <Grid item xs={12} sm={6}>
@@ -394,44 +412,47 @@ const UserList = () => {
                 type="email"
                 value={formData.email}
                 onChange={handleInputChange}
+                helperText="User email address"
                 error={!!formErrors.email}
-                helperText={formErrors.email}
               />
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                select
-                label="Role"
-                name="role"
-                value={formData.role}
-                onChange={handleInputChange}
-                required
-              >
-                <MenuItem value="Administrator">Administrator</MenuItem>
-                <MenuItem value="Supervisor">Supervisor</MenuItem>
-                <MenuItem value="Field_Worker">Field Worker</MenuItem>
-                <MenuItem value="Viewer">Viewer</MenuItem>
-              </TextField>
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth>
+                <InputLabel>Role *</InputLabel>
+                <Select
+                  value={formData.role}
+                  label="Role"
+                  name="role"
+                  onChange={handleInputChange}
+                  sx={{ height: 56, minWidth: 220 }}
+                >
+                  <MenuItem value="Administrator">Administrator</MenuItem>
+                  <MenuItem value="Supervisor">Supervisor</MenuItem>
+                  <MenuItem value="Field_Worker">Field Worker</MenuItem>
+                  <MenuItem value="Viewer">Viewer</MenuItem>
+                </Select>
+              </FormControl>
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                select
-                label="Agency"
-                name="agencyId"
-                value={formData.agencyId}
-                onChange={handleInputChange}
-                error={!!formErrors.agencyId}
-                helperText={formErrors.agencyId}
-                required
-              >
-                {agencies.map((agency) => (
-                  <MenuItem key={agency.Agency_ID} value={agency.Agency_ID}>
-                    {agency.Agency_Name} ({agency.Agency_CD})
-                  </MenuItem>
-                ))}
-              </TextField>
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth error={!!formErrors.agencyId} sx={{ minWidth: 240 }}>
+                <InputLabel>Agency *</InputLabel>
+                <Select
+                  value={formData.agencyId}
+                  label="Agency"
+                  name="agencyId"
+                  onChange={handleInputChange}
+                  sx={{ height: 56, minWidth: 240 }}
+                >
+                  {agencies.map((agency) => (
+                    <MenuItem key={agency.Agency_ID} value={agency.Agency_ID}>
+                      {agency.Agency_Name} ({agency.Agency_CD})
+                    </MenuItem>
+                  ))}
+                </Select>
+                <Typography variant="caption" color={formErrors.agencyId ? 'error' : 'text.secondary'} sx={{ mt: 0.75, ml: 1.5 }}>
+                  {formErrors.agencyId || 'Select the agency this user belongs to'}
+                </Typography>
+              </FormControl>
             </Grid>
           </Grid>
         </DialogContent>

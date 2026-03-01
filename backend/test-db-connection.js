@@ -1,19 +1,24 @@
 const sql = require('mssql');
 require('dotenv').config();
 
+const parseBoolean = (value, defaultValue = false) => {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+};
+
 async function testConnection() {
   console.log('Testing database connection with current configuration...\n');
   
-  // Test config 1: TCP on port 1434
+  // Test config 1: From environment variables (Azure SQL or configured server)
   const config1 = {
-    server: 'localhost',
-    port: 1434,
-    user: 'sa',
-    password: 'Herzog2025!',
-    database: 'HerzogRailAuthority',
+    server: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 1434,
+    user: process.env.DB_USER || 'sa',
+    password: process.env.DB_PASSWORD || 'Herzog2025!',
+    database: process.env.DB_NAME || 'HerzogRailAuthority',
     options: {
-      encrypt: false,
-      trustServerCertificate: true,
+      encrypt: parseBoolean(process.env.DB_ENCRYPT, true),
+      trustServerCertificate: parseBoolean(process.env.DB_TRUST_SERVER_CERT, true),
       enableArithAbort: true,
       connectTimeout: 10000,
       requestTimeout: 10000
@@ -22,7 +27,7 @@ async function testConnection() {
     requestTimeout: 10000
   };
 
-  // Test config 2: Using localhost (named pipes or default)
+  // Test config 2: Local fallback with encryption disabled
   const config2 = {
     server: 'localhost',
     user: 'sa',
@@ -58,7 +63,7 @@ async function testConnection() {
   };
 
   const configs = [
-    { name: 'TCP on port 1434', config: config1 },
+    { name: 'Environment config (Azure SQL or configured)', config: config1 },
     { name: 'localhost (default)', config: config2 },
     { name: 'Named pipes (MSSQLSERVER)', config: config3 }
   ];

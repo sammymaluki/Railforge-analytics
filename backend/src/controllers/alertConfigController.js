@@ -17,7 +17,7 @@ const getAlertConfigurations = async (req, res) => {
       });
     }
 
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     const configurations = await alertConfigModel.getAgencyConfigurations(agencyId);
 
     res.json({
@@ -52,7 +52,7 @@ const getAlertConfigurationsByType = async (req, res) => {
     }
 
     // Validate config type
-    const validTypes = ['Boundary_Alert', 'Proximity_Alert', 'Time_Alert', 'Speed_Alert'];
+    const validTypes = ['Boundary_Alert', 'Proximity_Alert', 'Overlap_Alert'];
     if (!validTypes.includes(configType)) {
       return res.status(400).json({
         success: false,
@@ -60,7 +60,7 @@ const getAlertConfigurationsByType = async (req, res) => {
       });
     }
 
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     let configurations;
 
     if (configType === 'Boundary_Alert') {
@@ -123,7 +123,7 @@ const createAlertConfiguration = async (req, res) => {
     }
 
     // Validate config type
-    const validTypes = ['Boundary_Alert', 'Proximity_Alert', 'Time_Alert', 'Speed_Alert'];
+    const validTypes = ['Boundary_Alert', 'Proximity_Alert', 'Overlap_Alert'];
     if (!validTypes.includes(configType)) {
       return res.status(400).json({
         success: false,
@@ -132,11 +132,11 @@ const createAlertConfiguration = async (req, res) => {
     }
 
     // Validate alert level
-    const validLevels = ['Info', 'Warning', 'Critical'];
+    const validLevels = ['informational', 'warning', 'critical', 'Informational', 'Warning', 'Critical'];
     if (!validLevels.includes(alertLevel)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid alert level. Must be one of: ${validLevels.join(', ')}`
+        message: 'Invalid alert level. Must be one of: Informational, Warning, Critical'
       });
     }
 
@@ -150,29 +150,15 @@ const createAlertConfiguration = async (req, res) => {
       }
     }
 
-    if (configType === 'Time_Alert' && !timeMinutes) {
-      return res.status(400).json({
-        success: false,
-        message: 'Time is required for time alerts'
-      });
-    }
-
-    if (configType === 'Speed_Alert' && !speedMph) {
-      return res.status(400).json({
-        success: false,
-        message: 'Speed is required for speed alerts'
-      });
-    }
-
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     const newConfig = await alertConfigModel.create({
       agencyId,
       configType,
       alertLevel,
       distanceMiles,
       timeMinutes,
-      speedMph,
-      message,
+      messageTemplate: message,
+      description: req.body.description || null,
       soundEnabled: soundEnabled !== undefined ? soundEnabled : true,
       vibrationEnabled: vibrationEnabled !== undefined ? vibrationEnabled : true,
       notificationTitle
@@ -189,6 +175,24 @@ const createAlertConfiguration = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error creating alert configuration:', error);
+
+    const isDuplicateKey =
+      error?.code === 'EREQUEST' &&
+      (error?.number === 2627 || error?.number === 2601);
+
+    if (isDuplicateKey) {
+      return res.status(409).json({
+        success: false,
+        message: 'An alert configuration already exists for this Agency, Config Type, and Alert Level. Edit the existing configuration instead of creating a duplicate.',
+        error: 'Duplicate alert configuration',
+        details: {
+          agencyId,
+          configType: req.body?.configType,
+          alertLevel: req.body?.alertLevel
+        }
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Failed to create alert configuration',
@@ -215,11 +219,11 @@ const updateAlertConfiguration = async (req, res) => {
 
     // Validate alert level if provided
     if (updateData.alertLevel) {
-      const validLevels = ['Info', 'Warning', 'Critical'];
+      const validLevels = ['informational', 'warning', 'critical', 'Informational', 'Warning', 'Critical'];
       if (!validLevels.includes(updateData.alertLevel)) {
         return res.status(400).json({
           success: false,
-          message: `Invalid alert level. Must be one of: ${validLevels.join(', ')}`
+          message: 'Invalid alert level. Must be one of: Informational, Warning, Critical'
         });
       }
     }
@@ -260,7 +264,7 @@ const updateAlertConfiguration = async (req, res) => {
       });
     }
 
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     const updatedConfig = await alertConfigModel.update(configId, fieldsToUpdate);
 
     if (!updatedConfig) {
@@ -304,7 +308,7 @@ const deleteAlertConfiguration = async (req, res) => {
       });
     }
 
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     
     // Soft delete by setting Is_Active to false
     const result = await alertConfigModel.update(configId, { Is_Active: false });
@@ -354,7 +358,7 @@ const bulkUpdateAlertConfigurations = async (req, res) => {
       });
     }
 
-    const alertConfigModel = new AlertConfiguration();
+    const alertConfigModel = AlertConfiguration;
     const results = [];
 
     for (const config of configurations) {

@@ -245,6 +245,7 @@ class DataValidationService {
     return [
       {
         Subdivision_ID: 1,
+        Agency_ID: 1,
         Track_Type: 'Main',
         Track_Number: '1',
         Begin_MP: 0.0,
@@ -254,6 +255,7 @@ class DataValidationService {
       },
       {
         Subdivision_ID: 1,
+        Agency_ID: 1,
         Track_Type: 'Siding',
         Track_Number: 'S1',
         Begin_MP: 10.5,
@@ -271,6 +273,7 @@ class DataValidationService {
     return [
       {
         Subdivision_ID: 1,
+        Agency_ID: 1,
         Track_Type: 'Main',
         Track_Number: '1',
         MP: 0.0,
@@ -280,6 +283,7 @@ class DataValidationService {
       },
       {
         Subdivision_ID: 1,
+        Agency_ID: 1,
         Track_Type: 'Main',
         Track_Number: '1',
         MP: 0.1,

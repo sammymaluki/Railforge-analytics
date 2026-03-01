@@ -431,48 +431,52 @@ const AuthorityFieldConfig = () => {
                     label="GPS Safety Alerts Enabled"
                   />
                 </Grid>
-                <Grid item xs={12} md={4}>
+                <Grid item xs={12} md={3}>
                   <TextField
                     fullWidth
                     type="number"
                     label="Accuracy Threshold (m)"
                     value={fieldConfigs.gpsSafetyAlerts.accuracyThresholdMeters ?? 25}
                     onChange={(e) => updateGpsSafetyNested('accuracyThresholdMeters', Number(e.target.value))}
-                    size="small"
+                    InputLabelProps={{ shrink: true }}
                     inputProps={{ min: 5, max: 500 }}
+                    sx={{ minWidth: 210 }}
                   />
                 </Grid>
-                <Grid item xs={12} md={4}>
+                <Grid item xs={12} md={3}>
                   <TextField
                     fullWidth
                     type="number"
                     label="Critical Accuracy Threshold (m)"
                     value={fieldConfigs.gpsSafetyAlerts.criticalAccuracyThresholdMeters ?? 50}
                     onChange={(e) => updateGpsSafetyNested('criticalAccuracyThresholdMeters', Number(e.target.value))}
-                    size="small"
+                    InputLabelProps={{ shrink: true }}
                     inputProps={{ min: 5, max: 1000 }}
+                    sx={{ minWidth: 210 }}
                   />
                 </Grid>
-                <Grid item xs={12} md={4}>
+                <Grid item xs={12} md={3}>
                   <TextField
                     fullWidth
                     type="number"
                     label="Stale Signal After (sec)"
                     value={fieldConfigs.gpsSafetyAlerts.staleAfterSeconds ?? 20}
                     onChange={(e) => updateGpsSafetyNested('staleAfterSeconds', Number(e.target.value))}
-                    size="small"
+                    InputLabelProps={{ shrink: true }}
                     inputProps={{ min: 5, max: 600 }}
+                    sx={{ minWidth: 210 }}
                   />
                 </Grid>
-                <Grid item xs={12} md={4}>
+                <Grid item xs={12} md={3}>
                   <TextField
                     fullWidth
                     type="number"
                     label="Repeat Frequency (sec)"
                     value={fieldConfigs.gpsSafetyAlerts.repeatFrequencySeconds ?? 30}
                     onChange={(e) => updateGpsSafetyNested('repeatFrequencySeconds', Number(e.target.value))}
-                    size="small"
+                    InputLabelProps={{ shrink: true }}
                     inputProps={{ min: 5, max: 600 }}
+                    sx={{ minWidth: 210 }}
                   />
                 </Grid>
                 <Grid item xs={12} md={4}>

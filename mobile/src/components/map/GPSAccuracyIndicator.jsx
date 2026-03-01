@@ -10,6 +10,11 @@ import { COLORS, FONT_SIZES } from '../../constants/theme';
 const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
   if (!show) return null;
 
+  const formatAccuracyText = (meters) => {
+    const feet = meters * 3.28084;
+    return `±${meters.toFixed(0)}m / ${feet.toFixed(0)}ft`;
+  };
+
   const getAccuracyLevel = () => {
     if (accuracy === null || accuracy === undefined || accuracy < 0) {
       return {
@@ -24,7 +29,7 @@ const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
     if (accuracy <= 10) {
       return {
         level: 'excellent',
-        text: `±${accuracy.toFixed(0)}m`,
+        text: formatAccuracyText(accuracy),
         color: '#00FF00',
         icon: 'crosshairs-gps',
         bars: 5,
@@ -34,7 +39,7 @@ const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
     if (accuracy <= 20) {
       return {
         level: 'good',
-        text: `±${accuracy.toFixed(0)}m`,
+        text: formatAccuracyText(accuracy),
         color: '#7FFF00',
         icon: 'crosshairs-gps',
         bars: 4,
@@ -44,7 +49,7 @@ const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
     if (accuracy <= 50) {
       return {
         level: 'fair',
-        text: `±${accuracy.toFixed(0)}m`,
+        text: formatAccuracyText(accuracy),
         color: '#FFFF00',
         icon: 'crosshairs',
         bars: 3,
@@ -54,7 +59,7 @@ const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
     if (accuracy <= 100) {
       return {
         level: 'poor',
-        text: `±${accuracy.toFixed(0)}m`,
+        text: formatAccuracyText(accuracy),
         color: '#FFA500',
         icon: 'crosshairs',
         bars: 2,
@@ -63,7 +68,7 @@ const GPSAccuracyIndicator = ({ accuracy, show = true }) => {
     
     return {
       level: 'degraded',
-      text: `±${accuracy.toFixed(0)}m`,
+      text: formatAccuracyText(accuracy),
       color: '#FF0000',
       icon: 'crosshairs',
       bars: 1,
